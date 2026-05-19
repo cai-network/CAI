@@ -329,12 +329,20 @@ class CaiDesktopAppTests(unittest.TestCase):
                 self.assertEqual(resolve_language("auto"), "en")
                 save_desktop_language("ru")
                 self.assertEqual(resolve_language("auto"), "ru")
+                save_desktop_language("es")
+                self.assertEqual(resolve_language("auto"), "es")
+                self.assertEqual(resolve_language("de"), "de")
                 self.assertEqual(resolve_language("en"), "en")
 
     def test_desktop_parser_defaults_to_english_language(self) -> None:
         args = build_parser().parse_args([])
 
         self.assertEqual(args.language, "en")
+
+    def test_desktop_parser_accepts_additional_languages(self) -> None:
+        for language in ("es", "de", "fr", "zh"):
+            args = build_parser().parse_args(["--language", language])
+            self.assertEqual(args.language, language)
 
     def test_handle_existing_instance_opens_saved_dashboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

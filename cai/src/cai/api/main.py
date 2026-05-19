@@ -243,7 +243,11 @@ from cai.utils.disk_event_log import DiskEventLog
 from cai.utils.power_sampler import PowerSampler
 from cai.utils.task_group import TaskGroup
 
-from cai_compute_chain.cai_desktop_app import resolve_language, save_desktop_language
+from cai_compute_chain.cai_desktop_app import (
+    SUPPORTED_DESKTOP_LANGUAGE_SET,
+    resolve_language,
+    save_desktop_language,
+)
 from cai_compute_chain.model import CaiNetworkConfig
 from cai_compute_chain.node_capabilities import (
     NodeCapabilityRecord,
@@ -2283,7 +2287,7 @@ class API:
         if not self._request_is_local(request):
             raise HTTPException(status_code=404, detail="Not found.")
         language = str(payload.get("language") or "").strip().lower()
-        if language not in {"en", "ru"}:
+        if language not in SUPPORTED_DESKTOP_LANGUAGE_SET:
             raise HTTPException(status_code=400, detail="Unsupported language.")
         save_desktop_language(language)
         return {"language": resolve_language("auto")}

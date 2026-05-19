@@ -7,9 +7,11 @@ SPDX-License-Identifier: Apache-2.0
   import { browser } from "$app/environment";
   import {
     currentLanguage,
+    languageOptions,
+    setLanguage,
     t,
-    toggleLanguage,
   } from "$lib/stores/i18n.svelte";
+  import type { Language } from "$lib/stores/i18n.svelte";
   import CaiCoinIcon from "./CaiCoinIcon.svelte";
 
   interface Props {
@@ -232,14 +234,20 @@ SPDX-License-Identifier: Apache-2.0
       </button>
     {/if}
     {#if showHome}
-      <button
-        onclick={() => toggleLanguage()}
-        class="text-xs md:text-sm text-white/60 hover:text-cai-yellow transition-colors tracking-wider uppercase flex items-center gap-1.5 cursor-pointer"
+      <select
+        value={language}
+        onchange={(event) =>
+          setLanguage(event.currentTarget.value as Language)}
+        class="max-w-[4.3rem] rounded border border-cai-light-gray/20 bg-cai-dark-gray/80 px-1.5 py-1 text-xs md:text-sm text-white/70 hover:text-cai-yellow focus:border-cai-yellow/60 focus:outline-none transition-colors tracking-wider uppercase cursor-pointer"
         title={t("nav.language")}
         aria-label={t("nav.language")}
       >
-        {language === "ru" ? "RU" : "EN"}
-      </button>
+        {#each languageOptions as option}
+          <option value={option.code} title={option.label}>
+            {option.shortLabel}
+          </option>
+        {/each}
+      </select>
       <button
         onclick={handleHome}
         class="flex text-sm text-white/70 hover:text-cai-yellow transition-colors tracking-wider uppercase items-center gap-2 cursor-pointer"

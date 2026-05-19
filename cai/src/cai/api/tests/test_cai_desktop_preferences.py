@@ -46,16 +46,16 @@ def test_desktop_preferences_update_persists_language() -> None:
 
     with (
         patch("cai.api.main.save_desktop_language") as save_mock,
-        patch("cai.api.main.resolve_language", return_value="en") as resolve_mock,
+        patch("cai.api.main.resolve_language", return_value="de") as resolve_mock,
     ):
         response = client.put(
             "/v1/cai/desktop/preferences",
-            json={"language": "en"},
+            json={"language": "de"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"language": "en"}
-    save_mock.assert_called_once_with("en")
+    assert response.json() == {"language": "de"}
+    save_mock.assert_called_once_with("de")
     resolve_mock.assert_called_once_with("auto")
 
 
@@ -66,7 +66,7 @@ def test_desktop_preferences_update_rejects_unknown_language() -> None:
     with patch("cai.api.main.save_desktop_language") as save_mock:
         response = client.put(
             "/v1/cai/desktop/preferences",
-            json={"language": "de"},
+            json={"language": "it"},
         )
 
     assert response.status_code == 400

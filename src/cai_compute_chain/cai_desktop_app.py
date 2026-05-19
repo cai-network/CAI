@@ -46,6 +46,17 @@ DESKTOP_PREFERENCES_FILENAME: Final[str] = "desktop-preferences.json"
 DESKTOP_INSTANCE_LOCK_FILENAME: Final[str] = "desktop-instance.lock"
 DESKTOP_INSTANCE_STATE_FILENAME: Final[str] = "desktop-instance.json"
 DEFAULT_DESKTOP_LANGUAGE: Final[str] = "en"
+SUPPORTED_DESKTOP_LANGUAGES: Final[tuple[str, ...]] = (
+    "en",
+    "ru",
+    "es",
+    "de",
+    "fr",
+    "zh",
+)
+SUPPORTED_DESKTOP_LANGUAGE_SET: Final[frozenset[str]] = frozenset(
+    SUPPORTED_DESKTOP_LANGUAGES
+)
 DESKTOP_ICON_SIZES: Final[tuple[tuple[int, int], ...]] = (
     (16, 16),
     (20, 20),
@@ -122,12 +133,12 @@ def _save_desktop_preferences(payload: dict[str, object]) -> None:
 
 def _stored_desktop_language() -> str | None:
     language = _load_desktop_preferences().get("language")
-    return language if language in {"en", "ru"} else None
+    return language if language in SUPPORTED_DESKTOP_LANGUAGE_SET else None
 
 
 def save_desktop_language(language: str) -> None:
     normalized = (language or "").lower()
-    if normalized not in {"en", "ru"}:
+    if normalized not in SUPPORTED_DESKTOP_LANGUAGE_SET:
         return
     payload = _load_desktop_preferences()
     payload["language"] = normalized
@@ -1052,13 +1063,13 @@ def run_runtime_doctor(
 
 def resolve_language(language: str = "auto") -> str:
     requested = (language or "auto").lower()
-    if requested in {"en", "ru"}:
+    if requested in SUPPORTED_DESKTOP_LANGUAGE_SET:
         return requested
     env_language = os.getenv("CAI_LANG", "").lower()
-    if env_language in {"en", "ru"}:
+    if env_language in SUPPORTED_DESKTOP_LANGUAGE_SET:
         return env_language
     stored_language = _stored_desktop_language()
-    if stored_language in {"en", "ru"}:
+    if stored_language in SUPPORTED_DESKTOP_LANGUAGE_SET:
         return stored_language
     return DEFAULT_DESKTOP_LANGUAGE
 
@@ -1073,6 +1084,10 @@ DESKTOP_TRANSLATIONS: dict[str, dict[str, str]] = {
         "language": "Language",
         "language_english": "English",
         "language_russian": "Russian",
+        "language_spanish": "Spanish",
+        "language_german": "German",
+        "language_french": "French",
+        "language_chinese": "Chinese",
         "quit": "Quit CAI",
         "already_running": "CAI is already running on this system.",
         "opening_existing_dashboard": "Opening the active CAI dashboard: {url}",
@@ -1093,6 +1108,10 @@ DESKTOP_TRANSLATIONS: dict[str, dict[str, str]] = {
         "language": "Язык",
         "language_english": "Английский",
         "language_russian": "Русский",
+        "language_spanish": "Испанский",
+        "language_german": "Немецкий",
+        "language_french": "Французский",
+        "language_chinese": "Китайский",
         "quit": "Выйти из CAI",
         "already_running": "CAI уже запущен на этой системе.",
         "opening_existing_dashboard": "Открываю активную панель CAI: {url}",
@@ -1103,6 +1122,102 @@ DESKTOP_TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
         "dashboard": "Панель CAI",
         "press_ctrl_c": "Нажмите Ctrl+C для остановки.",
+    },
+    "es": {
+        "open_dashboard": "Abrir panel",
+        "start_node": "Iniciar nodo",
+        "stop_node": "Detener nodo",
+        "restart_node": "Reiniciar nodo",
+        "check_runtime": "Comprobar/instalar requisitos",
+        "language": "Idioma",
+        "language_english": "Inglés",
+        "language_russian": "Ruso",
+        "language_spanish": "Español",
+        "language_german": "Alemán",
+        "language_french": "Francés",
+        "language_chinese": "Chino",
+        "quit": "Salir de CAI",
+        "already_running": "CAI ya se está ejecutando en este sistema.",
+        "opening_existing_dashboard": "Abriendo el panel CAI activo: {url}",
+        "console_fallback": "Usando modo de consola.",
+        "tray_missing": (
+            "pystray es necesario para el modo de bandeja. "
+            "Usa --no-tray o instala cai[desktop]."
+        ),
+        "dashboard": "Panel CAI",
+        "press_ctrl_c": "Pulsa Ctrl+C para detener.",
+    },
+    "de": {
+        "open_dashboard": "Dashboard öffnen",
+        "start_node": "Knoten starten",
+        "stop_node": "Knoten stoppen",
+        "restart_node": "Knoten neu starten",
+        "check_runtime": "Anforderungen prüfen/installieren",
+        "language": "Sprache",
+        "language_english": "Englisch",
+        "language_russian": "Russisch",
+        "language_spanish": "Spanisch",
+        "language_german": "Deutsch",
+        "language_french": "Französisch",
+        "language_chinese": "Chinesisch",
+        "quit": "CAI beenden",
+        "already_running": "CAI läuft bereits auf diesem System.",
+        "opening_existing_dashboard": "Aktives CAI-Dashboard wird geöffnet: {url}",
+        "console_fallback": "Wechsle in den Konsolenmodus.",
+        "tray_missing": (
+            "pystray ist für den Tray-Modus erforderlich. "
+            "Nutze --no-tray oder installiere cai[desktop]."
+        ),
+        "dashboard": "CAI-Dashboard",
+        "press_ctrl_c": "Drücke Ctrl+C zum Stoppen.",
+    },
+    "fr": {
+        "open_dashboard": "Ouvrir le tableau de bord",
+        "start_node": "Démarrer le nœud",
+        "stop_node": "Arrêter le nœud",
+        "restart_node": "Redémarrer le nœud",
+        "check_runtime": "Vérifier/installer les prérequis",
+        "language": "Langue",
+        "language_english": "Anglais",
+        "language_russian": "Russe",
+        "language_spanish": "Espagnol",
+        "language_german": "Allemand",
+        "language_french": "Français",
+        "language_chinese": "Chinois",
+        "quit": "Quitter CAI",
+        "already_running": "CAI est déjà lancé sur ce système.",
+        "opening_existing_dashboard": "Ouverture du tableau de bord CAI actif : {url}",
+        "console_fallback": "Passage en mode console.",
+        "tray_missing": (
+            "pystray est requis pour le mode tray. "
+            "Utilisez --no-tray ou installez cai[desktop]."
+        ),
+        "dashboard": "Tableau de bord CAI",
+        "press_ctrl_c": "Appuyez sur Ctrl+C pour arrêter.",
+    },
+    "zh": {
+        "open_dashboard": "打开仪表盘",
+        "start_node": "启动节点",
+        "stop_node": "停止节点",
+        "restart_node": "重启节点",
+        "check_runtime": "检查/安装依赖",
+        "language": "语言",
+        "language_english": "英语",
+        "language_russian": "俄语",
+        "language_spanish": "西班牙语",
+        "language_german": "德语",
+        "language_french": "法语",
+        "language_chinese": "中文",
+        "quit": "退出 CAI",
+        "already_running": "CAI 已在此系统上运行。",
+        "opening_existing_dashboard": "正在打开当前 CAI 仪表盘：{url}",
+        "console_fallback": "切换到控制台模式。",
+        "tray_missing": (
+            "托盘模式需要 pystray。"
+            "请使用 --no-tray 或安装 cai[desktop]。"
+        ),
+        "dashboard": "CAI 仪表盘",
+        "press_ctrl_c": "按 Ctrl+C 停止。",
     },
 }
 
@@ -1350,6 +1465,17 @@ def run_tray(controller: CaiDesktopController) -> int:
         icon.menu = _build_menu()
         icon.update_menu()
 
+    def _language_menu_item(label_key: str, language: str):
+        return pystray.MenuItem(
+            lambda item, label_key=label_key: desktop_text(
+                controller.config, label_key
+            ),
+            lambda icon, item, language=language: _set_language(icon, language),
+            radio=True,
+            checked=lambda item, language=language: _current_menu_language()
+            == language,
+        )
+
     def _build_menu():
         return pystray.Menu(
             pystray.MenuItem(
@@ -1375,18 +1501,12 @@ def run_tray(controller: CaiDesktopController) -> int:
             pystray.MenuItem(
                 lambda item: desktop_text(controller.config, "language"),
                 pystray.Menu(
-                    pystray.MenuItem(
-                        lambda item: desktop_text(controller.config, "language_english"),
-                        lambda icon, item: _set_language(icon, "en"),
-                        radio=True,
-                        checked=lambda item: _current_menu_language() == "en",
-                    ),
-                    pystray.MenuItem(
-                        lambda item: desktop_text(controller.config, "language_russian"),
-                        lambda icon, item: _set_language(icon, "ru"),
-                        radio=True,
-                        checked=lambda item: _current_menu_language() == "ru",
-                    ),
+                    _language_menu_item("language_english", "en"),
+                    _language_menu_item("language_russian", "ru"),
+                    _language_menu_item("language_spanish", "es"),
+                    _language_menu_item("language_german", "de"),
+                    _language_menu_item("language_french", "fr"),
+                    _language_menu_item("language_chinese", "zh"),
                 ),
             ),
             pystray.Menu.SEPARATOR,
@@ -1443,7 +1563,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--language",
-        choices=["auto", "en", "ru"],
+        choices=["auto", *SUPPORTED_DESKTOP_LANGUAGES],
         default=DEFAULT_DESKTOP_LANGUAGE,
     )
     parser.add_argument(CAI_INTERNAL_RUNTIME_FLAG, action="store_true", help=argparse.SUPPRESS)
@@ -1557,7 +1677,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     if enforce_single_instance:
-        if args.language in {"en", "ru"}:
+        if args.language in SUPPORTED_DESKTOP_LANGUAGE_SET:
             save_desktop_language(args.language)
         instance_guard.write_state(config)
 
