@@ -16,3 +16,4 @@ This folder contains the public documentation for CAI. It describes the current 
 - [Developer contributions and rewards](./CONTRIBUTING_AND_REWARDS.md) - developer fund, voting, and review process.
 - [Security and limitations](./SECURITY_AND_LIMITATIONS.md) - current risks and safe operating rules.
 - [GitHub setup](./GITHUB_SETUP.md) - repository access, branch protection, and maintainer workflow.
+- [Code cleanup and refactor plan](./CODE_CLEANUP_REFACTOR_PLAN.md) - safe cleanup checkpoints and active refactor boundaries.
