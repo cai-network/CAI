@@ -119,6 +119,8 @@ Linux/macOS:
 bash ./tools/bootstrap.sh
 ```
 
+The bootstrap command creates `.venv`, installs the Python packages, builds the native Rust binding, installs dashboard dependencies, and builds the web dashboard assets required by the runtime.
+
 Check status:
 
 ```powershell

@@ -70,7 +70,12 @@ def main() -> int:
     parser.add_argument(
         "--skip-dashboard",
         action="store_true",
-        help="Skip npm install in cai/dashboard.",
+        help="Skip npm install/build in cai/dashboard.",
+    )
+    parser.add_argument(
+        "--skip-dashboard-build",
+        action="store_true",
+        help="Install dashboard dependencies but skip the production dashboard build.",
     )
     parser.add_argument(
         "--skip-pip-install",
@@ -107,6 +112,10 @@ def main() -> int:
             print("[bootstrap] npm not found, skipping cai/dashboard install")
         else:
             run([npm, "ci"], cwd=dashboard_dir)
+            if args.skip_dashboard_build:
+                print("[bootstrap] skipping dashboard build")
+            else:
+                run([npm, "run", "build"], cwd=dashboard_dir)
 
     print()
     print("[bootstrap] next steps")
