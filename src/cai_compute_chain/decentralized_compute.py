@@ -334,7 +334,7 @@ def validate_cai_owned_transport_payload_signature(
     if not isinstance(payload, dict):
         return False, f"{payload_name} payload is missing"
     required = (
-        peer_payload_signatures_required()
+        peer_payload_signatures_required(policy=replay_cache_policy)
         if require_signature is None
         else bool(require_signature)
     )

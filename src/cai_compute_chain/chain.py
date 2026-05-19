@@ -781,6 +781,47 @@ def chain_transaction_ids(policy: WalletPolicy | None = None) -> set[str]:
     }
 
 
+def expected_total_supply_atomic(
+    *,
+    policy: WalletPolicy | None = None,
+    money_policy: MoneyPolicy | None = None,
+) -> int:
+    active_money_policy = _money_policy_for_wallet_policy(policy, money_policy)
+    return coins_to_atomic(
+        str(active_money_policy.total_supply_coins),
+        active_money_policy,
+    )
+
+
+def _chain_total_balance_atomic(blocks: list[ChainBlock]) -> int:
+    return sum(
+        int(balance)
+        for balance in chain_balance_index(blocks=blocks).values()
+    )
+
+
+def _validate_chain_supply_invariant(
+    blocks: list[ChainBlock],
+    *,
+    policy: WalletPolicy | None = None,
+    money_policy: MoneyPolicy | None = None,
+) -> str | None:
+    if not blocks:
+        return None
+    total_atomic = _chain_total_balance_atomic(blocks)
+    expected_atomic = expected_total_supply_atomic(
+        policy=policy,
+        money_policy=money_policy,
+    )
+    if total_atomic != expected_atomic:
+        return (
+            "chain total supply invariant failed: "
+            f"total_balance_atomic={total_atomic} "
+            f"expected_total_supply_atomic={expected_atomic}"
+        )
+    return None
+
+
 def _chain_transaction_nonces(blocks: list[ChainBlock]) -> set[tuple[str, str]]:
     return {
         (normalize_address(tx.address), str(tx.nonce))
@@ -1269,7 +1310,7 @@ def merge_remote_chain_payload(
         signature_ok, signature_error = verify_peer_payload_signature(
             payload,
             payload_name="chain",
-            require_signature=peer_payload_signatures_required(),
+            require_signature=peer_payload_signatures_required(policy=policy),
             require_hybrid_signature=peer_payload_hybrid_signatures_required(
                 policy=policy
             ),
@@ -1691,6 +1732,9 @@ def validate_chain_blocks(
     ):
         if balance_atomic < 0:
             errors.append(f"address {address} has negative balance")
+    supply_error = _validate_chain_supply_invariant(ordered_blocks, policy=policy)
+    if supply_error is not None:
+        errors.append(supply_error)
     for validator_id, locked_atomic in sorted(
         validator_locked_bond_index(blocks=ordered_blocks).items()
     ):

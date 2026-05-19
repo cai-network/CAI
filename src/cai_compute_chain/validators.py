@@ -24,6 +24,7 @@ from .model import (
 )
 from .peer_payload import (
     add_peer_payload_metadata,
+    peer_payload_hybrid_signatures_required,
     peer_payload_signatures_required,
     validate_peer_payload_network,
     verify_peer_payload_signature,
@@ -555,7 +556,10 @@ def merge_remote_validator_set_payload(
     signature_ok, signature_error = verify_peer_payload_signature(
         payload,
         payload_name="validator set",
-        require_signature=peer_payload_signatures_required(),
+        require_signature=peer_payload_signatures_required(policy=policy),
+        require_hybrid_signature=peer_payload_hybrid_signatures_required(
+            policy=policy
+        ),
     )
     if not signature_ok:
         raise ValueError(signature_error or "Invalid validator set payload signature.")

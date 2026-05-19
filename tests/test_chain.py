@@ -20,6 +20,7 @@ from cai_compute_chain.chain import (
     ChainBlock,
     ChainTransaction,
     _chain_snapshot_interval,
+    append_chain_block,
     chain_summary,
     chain_balance_atomic,
     chain_balance_index,
@@ -42,6 +43,7 @@ from cai_compute_chain.chain import (
     sync_chain_from_cai_peers,
     transaction_signing_payload,
     validate_chain_blocks,
+    validator_bond_pool_chain_address,
     wallet_balance_source,
     wallet_chain_balance_or_local_atomic,
 )
@@ -62,6 +64,134 @@ from cai_compute_chain.wallet_signing import (
     sign_payload_mldsa65_b64,
     sign_payload_b64,
 )
+
+
+_record_chain_transaction = record_chain_transaction
+
+
+def record_chain_transaction(
+    transaction: ChainTransaction,
+    *,
+    validator_id: str | None = None,
+    policy: WalletPolicy | None = None,
+) -> bool:
+    if (
+        transaction.delta_atomic <= 0
+        and transaction.tx_type != "wallet_transfer_debit"
+    ):
+        return _record_chain_transaction(
+            transaction,
+            validator_id=validator_id,
+            policy=policy,
+        )
+
+    active_policy = policy or WalletPolicy()
+    money_policy = MoneyPolicy(chain_network=active_policy.chain_network)
+    ensure_chain_genesis(policy=active_policy, money_policy=money_policy)
+    if transaction.tx_type == "wallet_transfer_debit":
+        balancing_credit = make_chain_transaction(
+            tx_type="test_wallet_transfer_credit",
+            address=transaction.counterparty_address or ("f" * 64),
+            delta_atomic=-int(transaction.delta_atomic),
+            settlement_id=transaction.settlement_id,
+            payout_id=transaction.payout_id,
+            counterparty_address=transaction.address,
+            nonce=f"{transaction.nonce or transaction.tx_id}:balancing-credit",
+            metadata={"test_pair": "wallet_transfer_debit"},
+            chain_id=money_policy.chain_network.value,
+        )
+        return (
+            append_chain_block(
+                [transaction, balancing_credit],
+                validator_id=validator_id,
+                policy=active_policy,
+            )
+            is not None
+        )
+
+    reserve_debit = make_chain_transaction(
+        tx_type="test_compute_reserve_debit",
+        address=compute_reserve_chain_address(money_policy),
+        delta_atomic=-int(transaction.delta_atomic),
+        settlement_id=transaction.settlement_id,
+        payout_id=transaction.payout_id,
+        counterparty_address=transaction.address,
+        nonce=f"{transaction.nonce or transaction.tx_id}:reserve-debit",
+        metadata={"test_pair": "worker_reward_credit"},
+        chain_id=money_policy.chain_network.value,
+    )
+    return (
+        append_chain_block(
+            [reserve_debit, transaction],
+            validator_id=validator_id,
+            policy=active_policy,
+        )
+        is not None
+    )
+
+
+def record_test_validator_bond(
+    *,
+    policy: WalletPolicy,
+    validator_address: str,
+    bonded_atomic: int = 1_000,
+) -> None:
+    money_policy = MoneyPolicy(chain_network=policy.chain_network)
+    ensure_chain_genesis(policy=policy, money_policy=money_policy)
+    bond_id = f"test-bond-{validator_address[:12]}"
+    append_chain_block(
+        [
+            make_chain_transaction(
+                tx_type="test_validator_funding_debit",
+                address=compute_reserve_chain_address(money_policy),
+                delta_atomic=-bonded_atomic,
+                counterparty_address=validator_address,
+                nonce=f"{bond_id}:reserve-debit",
+                chain_id=money_policy.chain_network.value,
+            ),
+            make_chain_transaction(
+                tx_type="test_validator_funding_credit",
+                address=validator_address,
+                delta_atomic=bonded_atomic,
+                counterparty_address=compute_reserve_chain_address(money_policy),
+                nonce=f"{bond_id}:wallet-credit",
+                chain_id=money_policy.chain_network.value,
+            ),
+            make_chain_transaction(
+                tx_type="validator_bond_lock",
+                address=validator_address,
+                delta_atomic=-bonded_atomic,
+                wallet_id="validator-wallet",
+                nonce=f"{bond_id}:wallet-lock",
+                metadata={
+                    "validator_id": validator_address,
+                    "validator_wallet_id": "validator-wallet",
+                    "validator_address": validator_address,
+                    "bond_atomic": bonded_atomic,
+                    "reward_token_code": money_policy.reward_token_code,
+                },
+                chain_id=money_policy.chain_network.value,
+            ),
+            make_chain_transaction(
+                tx_type="validator_bond_pool_credit",
+                address=validator_bond_pool_chain_address(money_policy),
+                delta_atomic=bonded_atomic,
+                wallet_id=f"system-validator-bond-pool-{money_policy.chain_network.value}",
+                counterparty_address=validator_address,
+                nonce=f"{bond_id}:pool-credit",
+                metadata={
+                    "validator_id": validator_address,
+                    "validator_wallet_id": "validator-wallet",
+                    "validator_address": validator_address,
+                    "bond_atomic": bonded_atomic,
+                    "reward_token_code": money_policy.reward_token_code,
+                },
+                chain_id=money_policy.chain_network.value,
+            ),
+        ],
+        validator_id=validator_address,
+        policy=policy,
+    )
 
 
 def recompute_raw_block_hash(raw_block: dict) -> None:
@@ -119,8 +249,18 @@ class ChainTests(unittest.TestCase):
             return_value=Path(self.tempdir.name),
         )
         self.repo_patch.start()
+        self.env_patch = patch.dict(
+            "os.environ",
+            {
+                "CAI_REQUIRE_HYBRID_PEER_PAYLOAD_SIGNATURES": "0",
+                "CAI_REQUIRE_SIGNED_PEER_PAYLOADS": "0",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
 
     def tearDown(self) -> None:
+        self.env_patch.stop()
         self.repo_patch.stop()
         self.tempdir.cleanup()
 
@@ -150,7 +290,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 2)
-        self.assertEqual(imported_transactions, 4)
+        self.assertEqual(imported_transactions, 5)
         self.assertEqual(duplicate_blocks, 0)
         self.assertEqual(duplicate_transactions, 0)
         self.assertEqual(
@@ -302,6 +442,10 @@ class ChainTests(unittest.TestCase):
             current_node_id="validator-node",
             policy=local_policy,
         )
+        record_test_validator_bond(
+            policy=local_policy,
+            validator_address=validator_address,
+        )
         record_chain_transaction(
             make_chain_transaction(
                 tx_type="local_test_credit",
@@ -342,7 +486,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 2)
-        self.assertEqual(imported_transactions, 2)
+        self.assertEqual(imported_transactions, 4)
         self.assertEqual(len(list_chain_blocks(local_policy)), 3)
         self.assertEqual(chain_balance_atomic(local_only_address, local_policy), 0)
         self.assertEqual(
@@ -373,6 +517,10 @@ class ChainTests(unittest.TestCase):
             static_ip_confirmed=True,
             current_node_id="validator-node",
             policy=local_policy,
+        )
+        record_test_validator_bond(
+            policy=local_policy,
+            validator_address=validator_address,
         )
         for address, nonce in (
             (local_address, "local-a"),
@@ -409,7 +557,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 1)
-        self.assertEqual(imported_transactions, 1)
+        self.assertEqual(imported_transactions, 2)
         self.assertEqual(len(list_chain_blocks(local_policy)), 2)
         self.assertEqual(chain_balance_atomic(local_address, local_policy), 0)
         self.assertEqual(chain_balance_atomic(local_second_address, local_policy), 0)
@@ -577,7 +725,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 2)
-        self.assertEqual(imported_transactions, 4)
+        self.assertEqual(imported_transactions, 5)
         self.assertEqual(
             chain_balance_atomic(address, target_policy),
             coins_to_atomic("0.25000000"),
@@ -612,7 +760,7 @@ class ChainTests(unittest.TestCase):
         chain = export_chain_payload(policy)["chain"]
 
         self.assertEqual(chain["block_count"], 2)
-        self.assertEqual(chain["transaction_count"], 4)
+        self.assertEqual(chain["transaction_count"], 5)
         self.assertEqual(chain["blocks"][0]["validator_id"], "genesis")
         self.assertEqual(chain["blocks"][1]["previous_hash"], chain["blocks"][0]["block_hash"])
 
@@ -700,7 +848,7 @@ class ChainTests(unittest.TestCase):
         payload["genesis_hash"] = "0" * 64
         payload["chain"]["genesis_hash"] = "0" * 64
 
-        with self.assertRaisesRegex(ValueError, "for genesis_hash"):
+        with self.assertRaisesRegex(ValueError, "genesis_hash"):
             merge_remote_chain_payload(payload, policy=target_policy)
 
     def test_chain_merge_logs_malformed_remote_block_payload(self) -> None:
@@ -868,7 +1016,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 3)
-        self.assertEqual(imported_transactions, 5)
+        self.assertEqual(imported_transactions, 7)
         self.assertEqual(
             chain_balance_atomic(address, target_policy),
             coins_to_atomic("0.25000000"),
@@ -897,7 +1045,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(second_tx, policy=source_policy))
         payload = export_chain_payload(source_policy)
         replayed_block = payload["chain"]["blocks"][2]
-        replayed_block["transactions"][0]["nonce"] = "nonce-1"
+        replayed_block["transactions"][1]["nonce"] = "nonce-1"
         replayed_block["tx_root"] = ""
         recompute_raw_block_hash(replayed_block)
 
@@ -907,7 +1055,7 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertEqual(imported_blocks, 2)
-        self.assertEqual(imported_transactions, 4)
+        self.assertEqual(imported_transactions, 5)
         self.assertEqual(
             chain_balance_atomic(address, target_policy),
             coins_to_atomic("0.10000000"),
@@ -923,13 +1071,11 @@ class ChainTests(unittest.TestCase):
         payload["chain"]["blocks"][0]["block_id"] = "competing-genesis"
         recompute_raw_block_hash(payload["chain"]["blocks"][0])
 
-        imported_blocks, imported_transactions = merge_remote_chain_payload(
-            payload,
-            policy=target_policy,
-        )
-
-        self.assertEqual(imported_blocks, 0)
-        self.assertEqual(imported_transactions, 0)
+        with self.assertRaisesRegex(ValueError, "genesis_hash"):
+            merge_remote_chain_payload(
+                payload,
+                policy=target_policy,
+            )
 
     def test_chain_merge_rejects_block_with_duplicate_transaction_ids(self) -> None:
         source_policy = WalletPolicy(wallet_data_dirname="node-a")
@@ -1175,7 +1321,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(chain_index_file_path(policy).exists())
         self.assertTrue(chain_snapshots_file_path(policy).exists())
         self.assertEqual(index["blockCount"], 3)
-        self.assertEqual(index["transactionCount"], 5)
+        self.assertEqual(index["transactionCount"], 7)
         self.assertEqual(index["balancesAtomic"][address], coins_to_atomic("1.00000000"))
         self.assertEqual(index["latestSnapshotHeight"], 2)
         self.assertEqual(snapshots["latest"]["height"], 2)

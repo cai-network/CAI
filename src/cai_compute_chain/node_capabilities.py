@@ -208,7 +208,7 @@ def merge_remote_node_capabilities_payload(
     )
     remote_source = source != "local_state"
     require_signature = (
-        peer_payload_signatures_required() if remote_source else False
+        peer_payload_signatures_required(policy=policy) if remote_source else False
     )
     signature_ok, signature_error = verify_peer_payload_signature(
         payload,
@@ -266,7 +266,7 @@ def worker_capability_verification_required(value: str | None = None) -> bool:
             "strict",
             "required",
         }
-    return peer_payload_signatures_required()
+    return peer_payload_signatures_required(policy=WalletPolicy())
 
 
 def worker_capability_validator_attestation_required(

@@ -97,7 +97,7 @@ def default_require_hybrid_peer_payload_signatures() -> bool:
     configured = _env_flag_or_none("CAI_REQUIRE_HYBRID_PEER_PAYLOAD_SIGNATURES")
     if configured is not None:
         return configured
-    return False
+    return resolve_active_chain_network() == ChainNetwork.MAINNET
 
 
 @dataclass(frozen=True)
@@ -498,7 +498,9 @@ class WalletPolicy:
             object.__setattr__(
                 self,
                 "require_hybrid_peer_payload_signatures",
-                configured if configured is not None else False,
+                configured
+                if configured is not None
+                else default_require_hybrid_peer_payload_signatures(),
             )
 
 

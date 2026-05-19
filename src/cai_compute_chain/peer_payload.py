@@ -258,7 +258,14 @@ def verify_peer_payload_signature(
     return True, None
 
 
-def peer_payload_signatures_required(value: str | None = None) -> bool:
+def peer_payload_signatures_required(
+    value: str | None = None,
+    *,
+    policy: WalletPolicy | object | None = None,
+) -> bool:
+    policy_value = getattr(policy, "require_hybrid_peer_payload_signatures", None)
+    if value is None and policy_value is not None and bool(policy_value):
+        return True
     raw = str(
         value
         if value is not None
@@ -313,10 +320,23 @@ def _payload_genesis_hash(payload: dict[str, Any]) -> str:
             return nested
     raw_blocks = payload.get("blocks")
     if isinstance(raw_blocks, list) and raw_blocks:
-        first_block = raw_blocks[0]
-        if isinstance(first_block, dict):
-            return str(first_block.get("block_hash") or "").strip().lower()
+        genesis_block = _payload_genesis_block(raw_blocks)
+        if genesis_block is not None:
+            return str(genesis_block.get("block_hash") or "").strip().lower()
     return ""
+
+
+def _payload_genesis_block(raw_blocks: list[Any]) -> dict[str, Any] | None:
+    for raw in raw_blocks:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            if int(raw.get("height") or 0) == 0:
+                return raw
+        except (TypeError, ValueError):
+            continue
+    first_block = raw_blocks[0]
+    return first_block if isinstance(first_block, dict) else None
 
 
 def _payload_genesis_hashes(payload: dict[str, Any]) -> set[str]:
@@ -337,9 +357,9 @@ def _payload_genesis_hashes(payload: dict[str, Any]) -> set[str]:
         values.update(_payload_genesis_hashes(nested_chain))
     raw_blocks = payload.get("blocks")
     if isinstance(raw_blocks, list) and raw_blocks:
-        first_block = raw_blocks[0]
-        if isinstance(first_block, dict):
-            block_hash = str(first_block.get("block_hash") or "").strip().lower()
+        genesis_block = _payload_genesis_block(raw_blocks)
+        if genesis_block is not None:
+            block_hash = str(genesis_block.get("block_hash") or "").strip().lower()
             if block_hash:
                 values.add(block_hash)
     return values
