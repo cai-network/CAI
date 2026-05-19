@@ -403,7 +403,9 @@ class CaiBridgeService:
         committee = self.modules.validators.build_validator_committee_snapshot(
             self.wallet_policy
         )
-        records = self.modules.validators.list_validator_records(self.wallet_policy)
+        records = self.modules.validators.list_effective_validator_records(
+            self.wallet_policy
+        )
         payload = {
             "validators": [
                 {

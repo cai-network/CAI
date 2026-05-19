@@ -16,10 +16,10 @@ from .chain import (
     chain_balance_atomic,
     chain_is_initialized,
     ensure_chain_genesis,
-    has_chain_activity_for_address,
     list_chain_blocks,
     make_chain_transaction,
     validator_bond_pool_chain_address,
+    validator_locked_bond_index,
     validator_slash_pool_chain_address,
     wallet_chain_balance_or_local_atomic,
 )
@@ -346,6 +346,28 @@ def load_or_create_node_config(policy: WalletPolicy | None = None) -> NodeRuntim
         config.validator_ha_lease_seconds = VALIDATOR_HA_DEFAULT_LEASE_SECONDS
         changed = True
 
+    if (
+        config.validator_state == ValidatorLifecycleState.BONDED
+        and not _local_validator_config_is_chain_backed(config, policy)
+    ):
+        stale_validator_wallet_id = config.validator_wallet_id
+        config.validator_enabled = False
+        config.validator_state = ValidatorLifecycleState.UNBONDED
+        config.validator_wallet_id = None
+        config.validator_address = None
+        config.validator_bond_atomic = 0
+        config.validator_ha_enabled = False
+        config.validator_ha_role = VALIDATOR_HA_ROLE_STANDALONE
+        config.validator_ha_replica_id = None
+        config.validator_unbonding_started_at = None
+        config.validator_unbonding_available_at = None
+        if stale_validator_wallet_id:
+            stale_wallet = find_wallet_by_id(stale_validator_wallet_id, policy)
+            if stale_wallet is not None and stale_wallet.validator_reserved_atomic:
+                stale_wallet.validator_reserved_atomic = 0
+                update_wallet(stale_wallet, policy)
+        changed = True
+
     if config.validator_state != ValidatorLifecycleState.JAILED:
         if config.validator_jailed_at is not None:
             config.validator_jailed_at = None
@@ -372,13 +394,6 @@ def save_node_config(
     path.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _validator_bond_should_use_chain(wallet, policy: WalletPolicy | None = None) -> bool:
-    return chain_is_initialized(policy) and has_chain_activity_for_address(
-        wallet.address,
-        policy,
-    )
-
-
 def _record_validator_bond_lock(
     *,
     wallet,
@@ -389,6 +404,14 @@ def _record_validator_bond_lock(
 ) -> None:
     chain_id = money_policy.chain_network.value
     validator_id = normalize_address(validator_address)
+    if bond_atomic <= 0:
+        raise ValueError("Validator self-bond must be positive.")
+    current_chain_balance = chain_balance_atomic(wallet.address, policy)
+    if current_chain_balance < bond_atomic:
+        raise ValueError(
+            "Active wallet chain balance is too low for validator mode. "
+            f"Minimum self-bond is {money_policy.validator_min_bond_coins}."
+        )
     bond_id = secrets.token_hex(12)
     metadata = {
         "bond_id": bond_id,
@@ -432,15 +455,49 @@ def _validator_bond_is_chain_backed(
     policy: WalletPolicy | None,
     money_policy: MoneyPolicy,
 ) -> bool:
+    required_bond_atomic = max(0, int(config.validator_bond_atomic or 0))
+    if required_bond_atomic <= 0:
+        return False
+    validator_id = normalize_address(config.validator_address or wallet.address)
+    locked_by_validator = validator_locked_bond_index(policy)
+    locked_atomic = max(0, int(locked_by_validator.get(validator_id, 0) or 0))
+    total_locked_atomic = sum(
+        max(0, int(value or 0)) for value in locked_by_validator.values()
+    )
+    bond_pool_atomic = chain_balance_atomic(
+        validator_bond_pool_chain_address(money_policy),
+        policy,
+    )
     return (
         chain_is_initialized(policy)
-        and has_chain_activity_for_address(wallet.address, policy)
         and _validator_bond_lock_exists(wallet=wallet, config=config, policy=policy)
-        and chain_balance_atomic(
-            validator_bond_pool_chain_address(money_policy),
-            policy,
-        )
-        >= max(0, int(config.validator_bond_atomic or 0))
+        and locked_atomic >= required_bond_atomic
+        and bond_pool_atomic == total_locked_atomic
+    )
+
+
+def _local_validator_config_is_chain_backed(
+    config: NodeRuntimeConfig,
+    policy: WalletPolicy | None = None,
+) -> bool:
+    if (
+        config.validator_state != ValidatorLifecycleState.BONDED
+        or not config.validator_wallet_id
+        or not config.validator_address
+        or config.validator_bond_atomic <= 0
+    ):
+        return False
+    wallet = find_wallet_by_id(config.validator_wallet_id, policy)
+    if wallet is None:
+        return False
+    if normalize_address(wallet.address) != normalize_address(config.validator_address):
+        return False
+    money_policy = MoneyPolicy(chain_network=(policy or WalletPolicy()).chain_network)
+    return _validator_bond_is_chain_backed(
+        wallet=wallet,
+        config=config,
+        policy=policy,
+        money_policy=money_policy,
     )
 
 
@@ -620,19 +677,15 @@ def set_validator_mode(
             raise ValueError("Validator is already bonded on this node. Disable it and wait for unbonding before switching validator wallets.")
 
         bond_atomic = status.required_bond_atomic
-        if _validator_bond_should_use_chain(wallet, policy):
-            _record_validator_bond_lock(
-                wallet=wallet,
-                bond_atomic=bond_atomic,
-                validator_address=wallet.address,
-                policy=policy,
-                money_policy=active_money_policy,
-            )
-            wallet.spendable_balance_atomic = chain_balance_atomic(wallet.address, policy)
-            wallet.validator_reserved_atomic = bond_atomic
-        else:
-            wallet.spendable_balance_atomic -= bond_atomic
-            wallet.validator_reserved_atomic += bond_atomic
+        _record_validator_bond_lock(
+            wallet=wallet,
+            bond_atomic=bond_atomic,
+            validator_address=wallet.address,
+            policy=policy,
+            money_policy=active_money_policy,
+        )
+        wallet.spendable_balance_atomic = chain_balance_atomic(wallet.address, policy)
+        wallet.validator_reserved_atomic = bond_atomic
         update_wallet(wallet, policy)
         append_journal_entry(
             JournalEntry(
@@ -641,7 +694,7 @@ def set_validator_mode(
                 created_at=_now_iso(),
                 wallet_id=wallet.wallet_id,
                 amount_atomic=bond_atomic,
-                note="Validator mode enabled and self-bond reserved.",
+                note="Validator mode enabled and self-bond locked on-chain.",
             ),
             policy,
         )
@@ -681,6 +734,19 @@ def get_validator_identity(policy: WalletPolicy | None = None) -> str | None:
     if config.validator_state != ValidatorLifecycleState.BONDED:
         return None
     if not config.validator_address:
+        return None
+    if not config.validator_wallet_id:
+        return None
+    wallet = find_wallet_by_id(config.validator_wallet_id, policy)
+    if wallet is None:
+        return None
+    money_policy = MoneyPolicy(chain_network=(policy or WalletPolicy()).chain_network)
+    if not _validator_bond_is_chain_backed(
+        wallet=wallet,
+        config=config,
+        policy=policy,
+        money_policy=money_policy,
+    ):
         return None
     return normalize_address(config.validator_address)
 
@@ -920,7 +986,12 @@ def get_validator_mode_status(
             validator_wallet is not None
             and normalize_address(validator_wallet.address)
             == normalize_address(config.validator_address or "")
-            and validator_wallet.validator_reserved_atomic >= config.validator_bond_atomic
+            and _validator_bond_is_chain_backed(
+                wallet=validator_wallet,
+                config=config,
+                policy=policy,
+                money_policy=active_money_policy,
+            )
         )
         bond_policy_ok = config.validator_bond_atomic == required_bond_atomic
         can_reuse_bonded_mode = (
@@ -936,7 +1007,7 @@ def get_validator_mode_status(
         elif not active_wallet_matches:
             bonded_reason = "Select the bonded validator wallet before changing validator mode."
         elif not wallet_bond_ok:
-            bonded_reason = "Validator self-bond is no longer fully reserved."
+            bonded_reason = "Validator self-bond is not backed by an on-chain bond lock."
         elif not bond_policy_ok:
             bonded_reason = "Validator bond no longer matches the current minimum self-bond policy."
         else:
@@ -1041,7 +1112,7 @@ def get_validator_mode_status(
             can_enable=False,
             state=config.validator_state,
             reason=(
-                "Active wallet balance is too low for validator mode. "
+                "Active wallet chain balance is too low for validator mode. "
                 f"Minimum self-bond is {active_money_policy.validator_min_bond_coins}."
             ),
             required_bond_atomic=required_bond_atomic,
@@ -1202,10 +1273,16 @@ def get_validator_attestation_status(
             can_attest=False,
             reason="Validator bond is bound to a different wallet address.",
         )
-    if wallet.validator_reserved_atomic < config.validator_bond_atomic:
+    money_policy = MoneyPolicy(chain_network=(policy or WalletPolicy()).chain_network)
+    if not _validator_bond_is_chain_backed(
+        wallet=wallet,
+        config=config,
+        policy=policy,
+        money_policy=money_policy,
+    ):
         return ValidatorAttestationStatus(
             can_attest=False,
-            reason="Validator self-bond is no longer fully reserved.",
+            reason="Validator self-bond is not backed by an on-chain bond lock.",
         )
 
     network_status = assess_validator_network_status(
@@ -1338,13 +1415,33 @@ def jail_validator(
         raise ValueError("Validator wallet could not be found locally.")
 
     active_money_policy = money_policy or MoneyPolicy()
+    if not _validator_bond_is_chain_backed(
+        wallet=wallet,
+        config=config,
+        policy=policy,
+        money_policy=active_money_policy,
+    ):
+        raise ValueError(
+            "Cannot jail validator because self-bond is not backed by an on-chain bond lock."
+        )
     effective_slash_bps = (
         int(slash_bps)
         if slash_bps is not None
         else int(active_money_policy.validator_jail_slash_bps)
     )
+    locked_by_validator = validator_locked_bond_index(policy)
+    chain_locked_atomic = max(
+        0,
+        int(
+            locked_by_validator.get(
+                normalize_address(config.validator_address or wallet.address),
+                0,
+            )
+            or 0
+        ),
+    )
     effective_locked_atomic = min(
-        max(0, wallet.validator_reserved_atomic),
+        chain_locked_atomic,
         max(0, config.validator_bond_atomic),
     )
     slash_atomic = 0
@@ -1353,30 +1450,19 @@ def jail_validator(
         slash_atomic = min(effective_locked_atomic, slash_atomic)
     released_atomic = max(0, effective_locked_atomic - slash_atomic)
 
-    if _validator_bond_is_chain_backed(
+    _record_validator_bond_slash(
         wallet=wallet,
         config=config,
+        slash_atomic=slash_atomic,
+        released_atomic=released_atomic,
         policy=policy,
         money_policy=active_money_policy,
-    ):
-        _record_validator_bond_slash(
-            wallet=wallet,
-            config=config,
-            slash_atomic=slash_atomic,
-            released_atomic=released_atomic,
-            policy=policy,
-            money_policy=active_money_policy,
-            reason=reason,
-        )
-        wallet.spendable_balance_atomic = chain_balance_atomic(wallet.address, policy)
-        wallet.validator_reserved_atomic = max(
-            0, wallet.validator_reserved_atomic - effective_locked_atomic
-        )
-    else:
-        wallet.validator_reserved_atomic = max(
-            0, wallet.validator_reserved_atomic - effective_locked_atomic
-        )
-        wallet.spendable_balance_atomic += released_atomic
+        reason=reason,
+    )
+    wallet.spendable_balance_atomic = chain_balance_atomic(wallet.address, policy)
+    wallet.validator_reserved_atomic = max(
+        0, wallet.validator_reserved_atomic - effective_locked_atomic
+    )
     update_wallet(wallet, policy)
 
     ledger = load_or_create_ledger(active_money_policy, policy)
@@ -1507,12 +1593,14 @@ def _release_validator_bond(
             money_policy = MoneyPolicy(
                 chain_network=(policy or WalletPolicy()).chain_network
             )
-            if _validator_bond_is_chain_backed(
+            chain_backed = _validator_bond_is_chain_backed(
                 wallet=wallet,
                 config=config,
                 policy=policy,
                 money_policy=money_policy,
-            ):
+            )
+            released_atomic = config.validator_bond_atomic if chain_backed else 0
+            if chain_backed:
                 _record_validator_bond_release(
                     wallet=wallet,
                     config=config,
@@ -1533,7 +1621,6 @@ def _release_validator_bond(
                 wallet.validator_reserved_atomic = max(
                     0, wallet.validator_reserved_atomic - config.validator_bond_atomic
                 )
-                wallet.spendable_balance_atomic += config.validator_bond_atomic
             update_wallet(wallet, policy)
             append_journal_entry(
                 JournalEntry(
@@ -1541,8 +1628,12 @@ def _release_validator_bond(
                     event_type="validator_bond_released",
                     created_at=_now_iso(),
                     wallet_id=wallet.wallet_id,
-                    amount_atomic=config.validator_bond_atomic,
-                    note=note,
+                    amount_atomic=released_atomic,
+                    note=(
+                        note
+                        if chain_backed
+                        else "Invalid local validator bond metadata cleared; no on-chain coins were released."
+                    ),
                 ),
                 policy,
             )
@@ -1621,6 +1712,24 @@ def _sync_local_validator_registry(
     if not validator_id:
         return
 
+    synced_state = config.validator_state
+    synced_bonded_atomic = config.validator_bond_atomic
+    if config.validator_state == ValidatorLifecycleState.BONDED:
+        wallet = (
+            find_wallet_by_id(config.validator_wallet_id, policy)
+            if config.validator_wallet_id
+            else None
+        )
+        money_policy = MoneyPolicy(chain_network=(policy or WalletPolicy()).chain_network)
+        if wallet is None or not _validator_bond_is_chain_backed(
+            wallet=wallet,
+            config=config,
+            policy=policy,
+            money_policy=money_policy,
+        ):
+            synced_state = ValidatorLifecycleState.UNBONDED
+            synced_bonded_atomic = 0
+
     current_node_id: str | None = None
     api_host: str | None = None
     data_host: str | None = None
@@ -1637,8 +1746,8 @@ def _sync_local_validator_registry(
         validator_id=normalize_address(validator_id),
         wallet_id=config.validator_wallet_id,
         address=normalize_address(validator_id),
-        state=config.validator_state,
-        bonded_atomic=config.validator_bond_atomic,
+        state=synced_state,
+        bonded_atomic=synced_bonded_atomic,
         static_ip_confirmed=config.validator_static_ip_confirmed,
         current_node_id=current_node_id,
         advertised_api_host=api_host,

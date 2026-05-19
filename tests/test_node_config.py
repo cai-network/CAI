@@ -52,6 +52,7 @@ from cai_compute_chain.wallet import (
     unlock_wallet,
     find_wallet_by_id,
     load_or_create_ledger,
+    update_wallet,
 )
 from cai_compute_chain.validators import list_validator_records, sync_validator_record
 
@@ -317,6 +318,64 @@ class NodeConfigTests(unittest.TestCase):
                 state_payload=self._public_validator_state(),
                 cai_url="http://127.0.0.1:52425",
             )
+
+    def test_validator_mode_rejects_local_only_wallet_balance(self) -> None:
+        wallet = create_wallet("validator", "pass", select=True)
+        credit_wallet(wallet.wallet_id, 2_000_000_000_000)
+        unlock_wallet("pass", selector=wallet.wallet_id)
+        set_validator_static_ip_confirmation(True)
+
+        status = get_validator_mode_status(
+            state_payload=self._public_validator_state(),
+            cai_url="http://127.0.0.1:52425",
+        )
+
+        self.assertFalse(status.can_enable)
+        self.assertIn("chain balance is too low", status.reason)
+        with self.assertRaisesRegex(ValueError, "chain balance is too low"):
+            set_validator_mode(
+                True,
+                state_payload=self._public_validator_state(),
+                cai_url="http://127.0.0.1:52425",
+            )
+        self.assertEqual(list_validator_records(), [])
+
+    def test_stale_local_reserved_validator_bond_is_demoted(self) -> None:
+        wallet = create_wallet("validator", "pass", select=True)
+        wallet.validator_reserved_atomic = 1_000_000_000_000
+        wallet.spendable_balance_atomic = 50_000_000_000_000
+        update_wallet(wallet)
+        config_path = node_config_file_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "validator_enabled": True,
+                    "validator_state": "bonded",
+                    "validator_wallet_id": wallet.wallet_id,
+                    "validator_address": wallet.address,
+                    "validator_bond_atomic": 1_000_000_000_000,
+                    "validator_static_ip_confirmed": True,
+                    "worker_enabled": False,
+                    "relay_enabled": True,
+                    "worker_allowed_model_ids": ["cai-network/Qwen3-0.6B-GGUF"],
+                    "worker_max_parallel_jobs": 1,
+                    "worker_max_memory_mb": None,
+                    "worker_reward_address_by_node_id": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_or_create_node_config()
+        wallet_after = find_wallet_by_id(wallet.wallet_id)
+
+        self.assertEqual(config.validator_state, "unbonded")
+        self.assertFalse(config.validator_enabled)
+        self.assertEqual(config.validator_bond_atomic, 0)
+        self.assertIsNotNone(wallet_after)
+        assert wallet_after is not None
+        self.assertEqual(wallet_after.validator_reserved_atomic, 0)
 
     def test_bonded_validator_status_reuses_reserved_bond(self) -> None:
         wallet = create_wallet("validator", "pass", select=True)
@@ -736,8 +795,11 @@ class NodeConfigTests(unittest.TestCase):
         )
 
         config = load_or_create_node_config()
-        self.assertTrue(config.validator_enabled)
-        self.assertEqual(config.validator_state, "bonded")
+        self.assertFalse(config.validator_enabled)
+        self.assertEqual(config.validator_state, "unbonded")
+        self.assertIsNone(config.validator_wallet_id)
+        self.assertIsNone(config.validator_address)
+        self.assertEqual(config.validator_bond_atomic, 0)
         self.assertFalse(config.worker_enabled)
 
     def test_stale_unbonding_dual_role_config_disables_worker(self) -> None:

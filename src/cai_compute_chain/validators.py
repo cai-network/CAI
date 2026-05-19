@@ -252,9 +252,64 @@ def sync_validator_record(
 def list_bonded_validators(policy: WalletPolicy | None = None) -> list[ValidatorRecord]:
     return [
         item
-        for item in list_validator_records(policy)
+        for item in list_effective_validator_records(policy)
         if item.state == ValidatorLifecycleState.BONDED and item.bonded_atomic > 0
     ]
+
+
+def list_effective_validator_records(
+    policy: WalletPolicy | None = None,
+) -> list[ValidatorRecord]:
+    locked_bonds = _chain_locked_bonds_by_validator(policy)
+    return [
+        _chain_backed_validator_record(item, locked_bonds)
+        for item in list_validator_records(policy)
+    ]
+
+
+def _chain_backed_validator_record(
+    record: ValidatorRecord,
+    locked_bonds: dict[str, int],
+) -> ValidatorRecord:
+    if record.state != ValidatorLifecycleState.BONDED:
+        return record
+    locked_atomic = locked_bonds.get(_normalize_validator_id(record.validator_id), 0)
+    if record.bonded_atomic > 0 and locked_atomic >= record.bonded_atomic:
+        return record
+    payload = asdict(record)
+    payload["state"] = ValidatorLifecycleState.UNBONDED
+    payload["bonded_atomic"] = 0
+    return ValidatorRecord(**payload)
+
+
+def _chain_locked_bonds_by_validator(
+    policy: WalletPolicy | None = None,
+) -> dict[str, int]:
+    try:
+        from .chain import (
+            chain_balance_atomic,
+            validator_bond_pool_chain_address,
+            validator_locked_bond_index,
+        )
+    except Exception:
+        return {}
+
+    locked_bonds = {
+        _normalize_validator_id(validator_id): max(0, int(locked_atomic or 0))
+        for validator_id, locked_atomic in validator_locked_bond_index(policy).items()
+    }
+    total_locked_atomic = sum(locked_bonds.values())
+    if total_locked_atomic <= 0:
+        return {}
+    pool_atomic = chain_balance_atomic(
+        validator_bond_pool_chain_address(
+            MoneyPolicy(chain_network=(policy or WalletPolicy()).chain_network)
+        ),
+        policy,
+    )
+    if pool_atomic != total_locked_atomic:
+        return {}
+    return locked_bonds
 
 
 def _quorum_bond_atomic(total_bonded_atomic: int) -> int:
@@ -438,7 +493,9 @@ def export_validator_set_payload(policy: WalletPolicy | None = None) -> dict[str
     return add_peer_payload_metadata(
         {
             "exported_at": _now_iso(),
-            "records": [asdict(item) for item in list_validator_records(policy)],
+            "records": [
+                asdict(item) for item in list_effective_validator_records(policy)
+            ],
             "committee": {
                 "validator_ids": list(committee.validator_ids),
                 "bonded_atomic_by_validator_id": dict(

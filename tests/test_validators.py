@@ -15,6 +15,12 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from cai_compute_chain.model import ChainNetwork, WalletPolicy
+from cai_compute_chain.chain import (
+    append_chain_block,
+    ensure_chain_genesis,
+    make_chain_transaction,
+    validator_bond_pool_chain_address,
+)
 from cai_compute_chain.peer_payload import add_peer_payload_metadata, sign_peer_payload
 from cai_compute_chain.validators import (
     build_validator_committee_snapshot,
@@ -47,7 +53,49 @@ class ValidatorsTests(unittest.TestCase):
         self.repo_patch.stop()
         self.tempdir.cleanup()
 
+    def _lock_validator_bond(
+        self,
+        validator_id: str,
+        wallet_id: str,
+        bonded_atomic: int,
+    ) -> None:
+        ensure_chain_genesis()
+        bond_id = f"test-bond-{validator_id}-{bonded_atomic}"
+        append_chain_block(
+            [
+                make_chain_transaction(
+                    tx_type="validator_bond_lock",
+                    address=validator_id,
+                    delta_atomic=-bonded_atomic,
+                    wallet_id=wallet_id,
+                    nonce=f"{bond_id}:wallet-lock",
+                    metadata={
+                        "validator_id": validator_id,
+                        "validator_wallet_id": wallet_id,
+                        "validator_address": validator_id,
+                        "bond_atomic": bonded_atomic,
+                    },
+                ),
+                make_chain_transaction(
+                    tx_type="validator_bond_pool_credit",
+                    address=validator_bond_pool_chain_address(),
+                    delta_atomic=bonded_atomic,
+                    wallet_id="system-validator-bond-pool-mainnet",
+                    counterparty_address=validator_id,
+                    nonce=f"{bond_id}:pool-credit",
+                    metadata={
+                        "validator_id": validator_id,
+                        "validator_wallet_id": wallet_id,
+                        "validator_address": validator_id,
+                        "bond_atomic": bonded_atomic,
+                    },
+                ),
+            ],
+            validator_id=validator_id,
+        )
+
     def test_export_validator_set_payload_includes_committee(self) -> None:
+        self._lock_validator_bond("validator-a", "wallet-a", 1_000)
         sync_validator_record(
             validator_id="validator-a",
             wallet_id="wallet-a",
@@ -67,6 +115,27 @@ class ValidatorsTests(unittest.TestCase):
         self.assertEqual(len(payload["records"]), 1)
         self.assertEqual(payload["committee"]["total_bonded_atomic"], 1_000)
         self.assertEqual(payload["committee"]["quorum_bond_atomic"], 667)
+
+    def test_export_validator_set_payload_excludes_unbacked_bond_from_committee(
+        self,
+    ) -> None:
+        sync_validator_record(
+            validator_id="validator-a",
+            wallet_id="wallet-a",
+            address="validator-a",
+            state="bonded",
+            bonded_atomic=1_000,
+            static_ip_confirmed=True,
+            current_node_id="node-a",
+            advertised_api_host="85.137.164.250",
+            advertised_data_host="85.137.164.250",
+        )
+
+        payload = export_validator_set_payload()
+
+        self.assertEqual(payload["records"][0]["state"], "unbonded")
+        self.assertEqual(payload["records"][0]["bonded_atomic"], 0)
+        self.assertEqual(payload["committee"]["total_bonded_atomic"], 0)
 
     def test_validator_set_payload_uses_wallet_policy_network(self) -> None:
         policy = WalletPolicy(chain_network=ChainNetwork.TESTNET)
@@ -204,6 +273,7 @@ class ValidatorsTests(unittest.TestCase):
         signing_seed = generate_signing_seed()
         public_key_b64 = public_key_b64_from_seed(signing_seed)
         validator_address = address_from_public_key_b64(public_key_b64)
+        self._lock_validator_bond(validator_address, "wallet-validator", 2_000)
         payload = sign_peer_payload(
             add_peer_payload_metadata({
                 "records": [
@@ -688,6 +758,7 @@ class ValidatorsTests(unittest.TestCase):
 
     def test_select_validator_committee_snapshot_is_deterministic_and_bounded(self) -> None:
         for suffix, bond in [("a", 10_000), ("b", 9_000), ("c", 8_000), ("d", 7_000)]:
+            self._lock_validator_bond(f"validator-{suffix}", f"wallet-{suffix}", bond)
             sync_validator_record(
                 validator_id=f"validator-{suffix}",
                 wallet_id=f"wallet-{suffix}",
