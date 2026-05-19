@@ -44,7 +44,7 @@ from .settlement import (
     list_validator_penalty_cases,
     list_worker_payouts,
 )
-from .validators import build_validator_committee_snapshot, list_validator_records
+from .validators import build_validator_committee_snapshot
 from .wallet import (
     LedgerState,
     WalletRecord,
@@ -571,7 +571,7 @@ def _build_validator_panel(
             ledger.project_treasury_balance_atomic,
             money_policy,
         ),
-        validator_set_size=len(list_validator_records(wallet_policy)),
+        validator_set_size=len(committee.validator_ids),
         validator_bonded_total_coins=atomic_to_coins(
             committee.total_bonded_atomic, money_policy
         ),
