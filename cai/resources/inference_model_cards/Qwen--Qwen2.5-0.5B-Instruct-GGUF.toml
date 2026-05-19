@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: Apache-2.0
+model_id = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+n_layers = 24
+hidden_size = 1
+supports_tensor = false
+tasks = ["TextGeneration"]
+family = "qwen"
+quantization = "Q4_K_M"
+base_model = "Qwen2.5 0.5B Instruct"
+capabilities = ["text"]
+context_length = 8192
+trust_remote_code = false
+inference_backend = "llama_cpp"
+preferred_filename = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+gguf_architecture = "qwen2"
+shard_compatibility = "layer_range_supported"
+layer_range_supported = true
+layer_range_probe_abi = "cai-layer-range-v1"
+layer_range_probe_report = "docs/reports/qwen2.5-production-binary-conformance-2026-05-11.json"
+layer_range_equivalence_probe_report = "docs/reports/qwen2.5-layer-range-equivalence-probe-2026-05-11.json"
+state_format = "ggml-tensor-v1/layer-range-activation-v1"
+activation_state_format = "ggml-tensor-v1/layer-range-activation-v1"
+decode_state_format = "ggml-kv-cache-v1/token-step-kv-cache-v1"
+shard_compatibility_reason = "Qwen2/Qwen2.5 GGUF layer-range path has checked CAI equivalence and production probes."
+
+[storage_size]
+in_bytes = 491400032

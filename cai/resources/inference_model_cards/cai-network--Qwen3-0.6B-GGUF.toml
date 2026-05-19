@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: Apache-2.0
+model_id = "cai-network/Qwen3-0.6B-GGUF"
+n_layers = 28
+hidden_size = 1024
+num_key_value_heads = 8
+supports_tensor = false
+tasks = ["TextGeneration"]
+family = "qwen"
+quantization = "Q8_0"
+base_model = "Qwen3 0.6B"
+capabilities = ["text", "thinking", "thinking_toggle"]
+context_length = 40960
+trust_remote_code = false
+inference_backend = "llama_cpp"
+preferred_filename = "Qwen3-0.6B-Q8_0.gguf"
+gguf_architecture = "qwen3"
+shard_compatibility = "layer_range_supported"
+layer_range_supported = true
+layer_range_probe_abi = "cai-layer-range-v1"
+layer_range_probe_report = "docs/reports/qwen3-production-binary-conformance-2026-05-10.json"
+layer_range_equivalence_probe_report = "docs/reports/qwen3-layer-range-equivalence-probe-2026-05-10.json"
+state_format = "ggml-tensor-v1/layer-range-activation-v1"
+activation_state_format = "ggml-tensor-v1/layer-range-activation-v1"
+decode_state_format = "ggml-kv-cache-v1/token-step-kv-cache-v1"
+
+[storage_size]
+in_bytes = 639446688

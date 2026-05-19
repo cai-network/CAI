@@ -1,0 +1,24 @@
+diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
+index e86f731..6a8d51f 100644
+--- a/src/models/qwen3.cpp
++++ b/src/models/qwen3.cpp
+@@ -111,9 +111,6 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+ 
+     if (cai_layer_range_enabled) {
+         GGML_ASSERT(cai_layer_end > cai_layer_start);
+-        if (cai_layer_start > 0) {
+-            GGML_ASSERT(ubatch.embd != nullptr && "CAI Qwen3 shard continuation requires activation input embeddings");
+-        }
+     }
+ 
+     for (int il = cai_layer_start; il < cai_layer_end; ++il) {
+@@ -157,7 +154,8 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        const int cai_output_layer = cai_layer_range_enabled ? cai_layer_end - 1 : static_cast<int>(n_layer) - 1;
++        if (il == cai_output_layer && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }

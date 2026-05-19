@@ -1,0 +1,22 @@
+{
+  "round_id": "year-1",
+  "round_type": "top-7",
+  "candidate_count": 0,
+  "status": "draft",
+  "github_issue": "",
+  "voting": {
+    "method": "signed_participant_votes",
+    "vote_command": "python -m cai_compute_chain.cli developer-fund sign-vote --round-id year-1 --github <your-github> --choice <candidate-github>",
+    "founder_confirmation_command": "python -m cai_compute_chain.cli developer-fund sign-founder-confirmation --round .github/developer-fund/rounds/round-001.json"
+  },
+  "vote_result": {
+    "outcome": "pending",
+    "source": "",
+    "completed_at": "",
+    "signed_vote_count": 0,
+    "tallies": {}
+  },
+  "founder_confirmation": null,
+  "winners": [],
+  "votes": []
+}

@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: MIT
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python Tests
+    if: ${{ vars.CAI_ENABLE_PYTHON_TESTS == '1' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install package
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .
+
+      - name: Compile sources and tools
+        shell: pwsh
+        run: python -m compileall src cai/src/cai tools tests
+
+      - name: Run unit tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+  release-checks:
+    name: Docs And Release Checks
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install package
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .
+
+      - name: Block known secret patterns
+        shell: pwsh
+        run: |
+          $patterns = @(
+            '(password|passwd|pwd)\s*[:=]\s*["''][^"'']{6,}["'']',
+            'seed phrase\s*[:=]\s*\S+',
+            'private key\s*[:=]\s*\S+',
+            'Пароль:\s',
+            'пароль:\s',
+            'root@[0-9]{1,3}(\.[0-9]{1,3}){3}',
+            'ssh\s+-N\s+-R'
+          ) -join '|'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $matches = git grep -n -I -E $patterns -- README.md docs src tools tests .github .env.example
+          $grepExitCode = $LASTEXITCODE
+          if ($grepExitCode -eq 0) {
+            $matches
+            throw "Tracked files contain a blocked secret/access pattern."
+          }
+          if ($grepExitCode -ne 1) {
+            exit $grepExitCode
+          }
+          exit 0
+
+      - name: Smoke release metadata tooling
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .dist | Out-Null
+          Set-Content -Path .dist\metadata-smoke-artifact.txt -Value "metadata-smoke" -Encoding UTF8
+          python .\tools\generate-release-metadata.py --artifact .dist\metadata-smoke-artifact.txt --output .dist\release-metadata-smoke.json --build-id ci-smoke --no-sign
+          python .\tools\generate-release-metadata.py --verify .dist\release-metadata-smoke.json
+
+      - name: Validate developer fund registry
+        shell: pwsh
+        run: python -m cai_compute_chain.cli developer-fund validate
+
+      - name: Portable clean check when artifact exists
+        shell: pwsh
+        run: |
+          if (Test-Path .dist\CAI-portable.zip) {
+            powershell -ExecutionPolicy Bypass -File .\tools\check-portable-clean.ps1 -Path .dist\CAI-portable.zip
+          } else {
+            Write-Host "No portable artifact in this CI job; clean check is skipped until release build uploads one."
+          }

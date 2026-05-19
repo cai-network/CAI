@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "util"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[lib]
+doctest = false
+name = "util"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

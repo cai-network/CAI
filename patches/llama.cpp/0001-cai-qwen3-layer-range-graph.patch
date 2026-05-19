@@ -1,0 +1,86 @@
+diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
+index fa656c8..e86f731 100644
+--- a/src/models/qwen3.cpp
++++ b/src/models/qwen3.cpp
+@@ -1,5 +1,40 @@
+ #include "models.h"
+ 
++#include <algorithm>
++#include <cstdlib>
++
++namespace {
++
++static bool cai_env_enabled(const char * name) {
++    const char * value = std::getenv(name);
++    if (value == nullptr) {
++        return false;
++    }
++    return value[0] != '\0' && value[0] != '0';
++}
++
++static int cai_env_i32(const char * name, int fallback) {
++    const char * value = std::getenv(name);
++    if (value == nullptr || value[0] == '\0') {
++        return fallback;
++    }
++
++    char * end = nullptr;
++    const long parsed = std::strtol(value, &end, 10);
++    if (end == value) {
++        return fallback;
++    }
++    if (parsed < 0) {
++        return 0;
++    }
++    if (parsed > 2147483647L) {
++        return 2147483647;
++    }
++    return static_cast<int>(parsed);
++}
++
++} // namespace
++
+ void llama_model_qwen3::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+     switch (hparams.n_layer) {
+@@ -67,7 +102,22 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+ 
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    const bool cai_layer_range_enabled = cai_env_enabled("CAI_LLAMA_CPP_SHARD_LAYER_RANGE");
++    const int  cai_layer_start = cai_layer_range_enabled
++        ? std::min<int>(static_cast<int>(n_layer), cai_env_i32("CAI_LLAMA_CPP_SHARD_LAYER_START", 0))
++        : 0;
++    const int  cai_layer_end = cai_layer_range_enabled
++        ? std::min<int>(static_cast<int>(n_layer), cai_env_i32("CAI_LLAMA_CPP_SHARD_LAYER_END", static_cast<int>(n_layer)))
++        : static_cast<int>(n_layer);
++
++    if (cai_layer_range_enabled) {
++        GGML_ASSERT(cai_layer_end > cai_layer_start);
++        if (cai_layer_start > 0) {
++            GGML_ASSERT(ubatch.embd != nullptr && "CAI Qwen3 shard continuation requires activation input embeddings");
++        }
++    }
++
++    for (int il = cai_layer_start; il < cai_layer_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -139,6 +189,16 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+     }
+     cur = inpL;
+ 
++    if (cai_layer_range_enabled && cai_layer_end < n_layer) {
++        // Expose the raw layer boundary activation instead of running the
++        // output norm/head. This is the first compute-side hook needed for
++        // CAI PC-to-PC activation handoff.
++        cb(cur, "cai_layer_range_activation", cai_layer_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);

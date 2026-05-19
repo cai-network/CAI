@@ -1,0 +1,701 @@
+<!--
+SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+SPDX-FileCopyrightText: 2026 CAI contributors
+SPDX-License-Identifier: Apache-2.0
+-->
+<script lang="ts">
+  import {
+    imageGenerationParams,
+    setImageGenerationParams,
+    resetImageGenerationParams,
+    type ImageGenerationParams,
+  } from "$lib/stores/app.svelte";
+  import { tr } from "$lib/stores/i18n.svelte";
+
+  interface Props {
+    isEditMode?: boolean;
+  }
+
+  let { isEditMode = false }: Props = $props();
+
+  let showAdvanced = $state(false);
+
+  // Custom dropdown state
+  let isSizeDropdownOpen = $state(false);
+  let isQualityDropdownOpen = $state(false);
+  let sizeButtonRef: HTMLButtonElement | undefined = $state();
+  let qualityButtonRef: HTMLButtonElement | undefined = $state();
+
+  const sizeDropdownPosition = $derived(() => {
+    if (!sizeButtonRef || !isSizeDropdownOpen)
+      return { top: 0, left: 0, width: 0 };
+    const rect = sizeButtonRef.getBoundingClientRect();
+    return { top: rect.top, left: rect.left, width: rect.width };
+  });
+
+  const qualityDropdownPosition = $derived(() => {
+    if (!qualityButtonRef || !isQualityDropdownOpen)
+      return { top: 0, left: 0, width: 0 };
+    const rect = qualityButtonRef.getBoundingClientRect();
+    return { top: rect.top, left: rect.left, width: rect.width };
+  });
+
+  const params = $derived(imageGenerationParams());
+
+  const inputFidelityOptions: ImageGenerationParams["inputFidelity"][] = [
+    "low",
+    "high",
+  ];
+
+  const outputFormatOptions: ImageGenerationParams["outputFormat"][] = [
+    "png",
+    "jpeg",
+  ];
+
+  function handleInputFidelityChange(
+    value: ImageGenerationParams["inputFidelity"],
+  ) {
+    setImageGenerationParams({ inputFidelity: value });
+  }
+
+  function handleOutputFormatChange(
+    value: ImageGenerationParams["outputFormat"],
+  ) {
+    setImageGenerationParams({ outputFormat: value });
+  }
+
+  const sizeOptions: ImageGenerationParams["size"][] = [
+    "auto",
+    "512x512",
+    "768x768",
+    "1024x1024",
+    "1024x768",
+    "768x1024",
+    "1024x1536",
+    "1536x1024",
+  ];
+
+  const qualityOptions: ImageGenerationParams["quality"][] = [
+    "low",
+    "medium",
+    "high",
+  ];
+
+  function selectSize(value: ImageGenerationParams["size"]) {
+    setImageGenerationParams({ size: value });
+    isSizeDropdownOpen = false;
+  }
+
+  function selectQuality(value: ImageGenerationParams["quality"]) {
+    setImageGenerationParams({ quality: value });
+    isQualityDropdownOpen = false;
+  }
+
+  function handleSeedChange(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const value = input.value.trim();
+    if (value === "") {
+      setImageGenerationParams({ seed: null });
+    } else {
+      const num = parseInt(value, 10);
+      if (!isNaN(num) && num >= 0) {
+        setImageGenerationParams({ seed: num });
+      }
+    }
+  }
+
+  function handleStepsChange(event: Event) {
+    const value = parseInt((event.target as HTMLInputElement).value, 10);
+    setImageGenerationParams({ numInferenceSteps: value });
+  }
+
+  function handleGuidanceChange(event: Event) {
+    const value = parseFloat((event.target as HTMLInputElement).value);
+    setImageGenerationParams({ guidance: value });
+  }
+
+  function handleNegativePromptChange(event: Event) {
+    const value = (event.target as HTMLTextAreaElement).value;
+    setImageGenerationParams({ negativePrompt: value || null });
+  }
+
+  function handleNumImagesChange(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const value = input.value.trim();
+    if (value === "") {
+      setImageGenerationParams({ numImages: 1 });
+    } else {
+      const num = parseInt(value, 10);
+      if (!isNaN(num) && num >= 1) {
+        setImageGenerationParams({ numImages: num });
+      }
+    }
+  }
+
+  function handleStreamChange(enabled: boolean) {
+    setImageGenerationParams({ stream: enabled });
+  }
+
+  function handlePartialImagesChange(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const value = input.value.trim();
+    if (value === "") {
+      setImageGenerationParams({ partialImages: 0 });
+    } else {
+      const num = parseInt(value, 10);
+      if (!isNaN(num) && num >= 0) {
+        setImageGenerationParams({ partialImages: num });
+      }
+    }
+  }
+
+  function clearSteps() {
+    setImageGenerationParams({ numInferenceSteps: null });
+  }
+
+  function clearGuidance() {
+    setImageGenerationParams({ guidance: null });
+  }
+
+  function handleNumSyncStepsChange(event: Event) {
+    const value = parseInt((event.target as HTMLInputElement).value, 10);
+    setImageGenerationParams({ numSyncSteps: value });
+  }
+
+  function clearNumSyncSteps() {
+    setImageGenerationParams({ numSyncSteps: null });
+  }
+
+  function handleReset() {
+    resetImageGenerationParams();
+    showAdvanced = false;
+  }
+
+  const hasAdvancedParams = $derived(
+    params.seed !== null ||
+      params.numInferenceSteps !== null ||
+      params.guidance !== null ||
+      (params.negativePrompt !== null && params.negativePrompt.trim() !== "") ||
+      params.numSyncSteps !== null,
+  );
+</script>
+
+<div class="border-b border-cai-medium-gray/30 px-3 py-2">
+  <!-- Basic params row -->
+  <div class="flex items-center gap-3 flex-wrap">
+    <!-- Size -->
+    <div class="flex items-center gap-1.5">
+      <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+        >{tr("Size:")}</span
+      >
+      <div class="relative">
+        <button
+          bind:this={sizeButtonRef}
+          type="button"
+          onclick={() => (isSizeDropdownOpen = !isSizeDropdownOpen)}
+          class="bg-cai-medium-gray/50 border border-cai-yellow/30 rounded pl-2 pr-6 py-1 text-xs font-mono text-cai-yellow cursor-pointer transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70 {isSizeDropdownOpen
+            ? 'border-cai-yellow/70'
+            : ''}"
+        >
+          {tr(params.size).toUpperCase()}
+        </button>
+        <div
+          class="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none transition-transform duration-200 {isSizeDropdownOpen
+            ? 'rotate-180'
+            : ''}"
+        >
+          <svg
+            class="w-3 h-3 text-cai-yellow/60"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M19 9l-7 7-7-7"
+            />
+          </svg>
+        </div>
+      </div>
+
+      {#if isSizeDropdownOpen}
+        <!-- Backdrop to close dropdown -->
+        <button
+          type="button"
+          class="fixed inset-0 z-[9998] cursor-default"
+          onclick={() => (isSizeDropdownOpen = false)}
+          aria-label={tr("Close dropdown")}
+        ></button>
+
+        <!-- Dropdown Panel - fixed positioning to escape overflow:hidden -->
+        <div
+          class="fixed bg-cai-dark-gray border border-cai-yellow/30 rounded shadow-lg shadow-black/50 z-[9999] max-h-48 overflow-y-auto overflow-x-hidden min-w-max"
+          style="bottom: calc(100vh - {sizeDropdownPosition()
+            .top}px + 4px); left: {sizeDropdownPosition().left}px;"
+        >
+          <div class="py-1">
+            {#each sizeOptions as size}
+              <button
+                type="button"
+                onclick={() => selectSize(size)}
+                class="w-full px-3 py-1.5 text-left text-xs font-mono tracking-wide transition-colors duration-100 flex items-center gap-2 {params.size ===
+                size
+                  ? 'bg-transparent text-cai-yellow'
+                  : 'text-cai-light-gray hover:text-cai-yellow'}"
+              >
+                {#if params.size === size}
+                  <svg
+                    class="w-3 h-3 flex-shrink-0"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                {:else}
+                  <span class="w-3"></span>
+                {/if}
+                <span>{tr(size).toUpperCase()}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Quality -->
+    <div class="flex items-center gap-1.5">
+      <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+        >{tr("Quality:")}</span
+      >
+      <div class="relative">
+        <button
+          bind:this={qualityButtonRef}
+          type="button"
+          onclick={() => (isQualityDropdownOpen = !isQualityDropdownOpen)}
+          class="bg-cai-medium-gray/50 border border-cai-yellow/30 rounded pl-2 pr-6 py-1 text-xs font-mono text-cai-yellow cursor-pointer transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70 {isQualityDropdownOpen
+            ? 'border-cai-yellow/70'
+            : ''}"
+        >
+          {tr(params.quality).toUpperCase()}
+        </button>
+        <div
+          class="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none transition-transform duration-200 {isQualityDropdownOpen
+            ? 'rotate-180'
+            : ''}"
+        >
+          <svg
+            class="w-3 h-3 text-cai-yellow/60"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M19 9l-7 7-7-7"
+            />
+          </svg>
+        </div>
+      </div>
+
+      {#if isQualityDropdownOpen}
+        <!-- Backdrop to close dropdown -->
+        <button
+          type="button"
+          class="fixed inset-0 z-[9998] cursor-default"
+          onclick={() => (isQualityDropdownOpen = false)}
+          aria-label={tr("Close dropdown")}
+        ></button>
+
+        <!-- Dropdown Panel - fixed positioning to escape overflow:hidden -->
+        <div
+          class="fixed bg-cai-dark-gray border border-cai-yellow/30 rounded shadow-lg shadow-black/50 z-[9999] max-h-48 overflow-y-auto overflow-x-hidden min-w-max"
+          style="bottom: calc(100vh - {qualityDropdownPosition()
+            .top}px + 4px); left: {qualityDropdownPosition().left}px;"
+        >
+          <div class="py-1">
+            {#each qualityOptions as quality}
+              <button
+                type="button"
+                onclick={() => selectQuality(quality)}
+                class="w-full px-3 py-1.5 text-left text-xs font-mono tracking-wide transition-colors duration-100 flex items-center gap-2 {params.quality ===
+                quality
+                  ? 'bg-transparent text-cai-yellow'
+                  : 'text-cai-light-gray hover:text-cai-yellow'}"
+              >
+                {#if params.quality === quality}
+                  <svg
+                    class="w-3 h-3 flex-shrink-0"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                {:else}
+                  <span class="w-3"></span>
+                {/if}
+                <span>{tr(quality).toUpperCase()}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Format -->
+    <div class="flex items-center gap-1.5">
+      <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+        >{tr("Format:")}</span
+      >
+      <div class="flex rounded overflow-hidden border border-cai-yellow/30">
+        {#each outputFormatOptions as format}
+          <button
+            type="button"
+            onclick={() => handleOutputFormatChange(format)}
+            class="px-2 py-1 text-xs font-mono uppercase transition-all duration-200 cursor-pointer {params.outputFormat ===
+            format
+              ? 'bg-cai-yellow text-cai-black'
+              : 'bg-cai-medium-gray/50 text-cai-light-gray hover:text-cai-yellow'}"
+          >
+            {format}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <!-- Number of Images (not in edit mode) -->
+    {#if !isEditMode}
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+          >{tr("Images:")}</span
+        >
+        <input
+          type="number"
+          min="1"
+          value={params.numImages}
+          oninput={handleNumImagesChange}
+          class="w-12 bg-cai-medium-gray/50 border border-cai-yellow/30 rounded px-2 py-1 text-xs font-mono text-cai-yellow text-center transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70"
+        />
+      </div>
+    {/if}
+
+    <!-- Stream toggle -->
+    <div class="flex items-center gap-1.5">
+      <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+        >{tr("Stream:")}</span
+      >
+      <button
+        type="button"
+        onclick={() => handleStreamChange(!params.stream)}
+        class="w-8 h-4 rounded-full transition-all duration-200 cursor-pointer relative {params.stream
+          ? 'bg-cai-yellow'
+          : 'bg-cai-medium-gray/50 border border-cai-yellow/30'}"
+        title={params.stream ? tr("Streaming enabled") : tr("Streaming disabled")}
+      >
+        <div
+          class="absolute top-0.5 w-3 h-3 rounded-full transition-all duration-200 {params.stream
+            ? 'right-0.5 bg-cai-black'
+            : 'left-0.5 bg-cai-light-gray'}"
+        ></div>
+      </button>
+    </div>
+
+    <!-- Partial Images (only when streaming) -->
+    {#if params.stream}
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+          >{tr("Partials:")}</span
+        >
+        <input
+          type="number"
+          min="0"
+          value={params.partialImages}
+          oninput={handlePartialImagesChange}
+          class="w-12 bg-cai-medium-gray/50 border border-cai-yellow/30 rounded px-2 py-1 text-xs font-mono text-cai-yellow text-center transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70"
+        />
+      </div>
+    {/if}
+
+    <!-- Input Fidelity (edit mode only) -->
+    {#if isEditMode}
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+          >{tr("Fidelity:")}</span
+        >
+        <div class="flex rounded overflow-hidden border border-cai-yellow/30">
+          {#each inputFidelityOptions as fidelity}
+            <button
+              type="button"
+              onclick={() => handleInputFidelityChange(fidelity)}
+              class="px-2 py-1 text-xs font-mono uppercase transition-all duration-200 cursor-pointer {params.inputFidelity ===
+              fidelity
+                ? 'bg-cai-yellow text-cai-black'
+                : 'bg-cai-medium-gray/50 text-cai-light-gray hover:text-cai-yellow'}"
+              title={fidelity === "low"
+                ? tr("More creative variation")
+                : tr("Closer to original")}
+            >
+              {tr(fidelity)}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Spacer -->
+    <div class="flex-1"></div>
+
+    <!-- Advanced toggle -->
+    <button
+      type="button"
+      onclick={() => (showAdvanced = !showAdvanced)}
+      class="flex items-center gap-1 text-xs font-mono tracking-wider uppercase transition-colors duration-200 {showAdvanced ||
+      hasAdvancedParams
+        ? 'text-cai-yellow'
+        : 'text-cai-light-gray hover:text-cai-yellow'}"
+    >
+      <span>{tr("Advanced")}</span>
+      <svg
+        class="w-3 h-3 transition-transform duration-200 {showAdvanced
+          ? 'rotate-180'
+          : ''}"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M19 9l-7 7-7-7"
+        />
+      </svg>
+      {#if hasAdvancedParams && !showAdvanced}
+        <span class="w-1.5 h-1.5 rounded-full bg-cai-yellow"></span>
+      {/if}
+    </button>
+  </div>
+
+  <!-- Advanced params section -->
+  {#if showAdvanced}
+    <div class="mt-3 pt-3 border-t border-cai-medium-gray/20 space-y-3">
+      <!-- Row 1: Seed and Steps -->
+      <div class="flex items-center gap-4 flex-wrap">
+        <!-- Seed -->
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+            >{tr("Seed:")}</span
+          >
+          <input
+            type="number"
+            min="0"
+            value={params.seed ?? ""}
+            oninput={handleSeedChange}
+            placeholder={tr("Random")}
+            class="w-24 bg-cai-medium-gray/50 border border-cai-yellow/30 rounded px-2 py-1 text-xs font-mono text-cai-yellow placeholder:text-cai-light-gray/50 transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70"
+          />
+        </div>
+
+        <!-- Steps Slider -->
+        <div class="flex items-center gap-1.5 flex-1 min-w-[200px]">
+          <span
+            class="text-xs text-cai-light-gray uppercase tracking-wider whitespace-nowrap"
+            >{tr("Steps:")}</span
+          >
+          <div class="flex items-center gap-2 flex-1">
+            <input
+              type="range"
+              min="1"
+              max="100"
+              value={params.numInferenceSteps ?? 50}
+              oninput={handleStepsChange}
+              class="flex-1 h-1 bg-cai-medium-gray/50 rounded appearance-none cursor-pointer accent-cai-yellow"
+            />
+            <span class="text-xs font-mono text-cai-yellow w-8 text-right">
+              {params.numInferenceSteps ?? "--"}
+            </span>
+            {#if params.numInferenceSteps !== null}
+              <button
+                type="button"
+                onclick={clearSteps}
+                class="text-cai-light-gray hover:text-cai-yellow transition-colors"
+                title={tr("Clear")}
+              >
+                <svg
+                  class="w-3 h-3"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 2: Guidance -->
+      <div class="flex items-center gap-1.5">
+        <span
+          class="text-xs text-cai-light-gray uppercase tracking-wider whitespace-nowrap"
+          >{tr("Guidance:")}</span
+        >
+        <div class="flex items-center gap-2 flex-1 max-w-xs">
+          <input
+            type="range"
+            min="1"
+            max="20"
+            step="0.5"
+            value={params.guidance ?? 7.5}
+            oninput={handleGuidanceChange}
+            class="flex-1 h-1 bg-cai-medium-gray/50 rounded appearance-none cursor-pointer accent-cai-yellow"
+          />
+          <span class="text-xs font-mono text-cai-yellow w-8 text-right">
+            {params.guidance !== null ? params.guidance.toFixed(1) : "--"}
+          </span>
+          {#if params.guidance !== null}
+            <button
+              type="button"
+              onclick={clearGuidance}
+              class="text-cai-light-gray hover:text-cai-yellow transition-colors"
+              title={tr("Clear")}
+            >
+              <svg
+                class="w-3 h-3"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Row 3: Sync Steps -->
+      <div class="flex items-center gap-1.5">
+        <span
+          class="text-xs text-cai-light-gray uppercase tracking-wider whitespace-nowrap"
+          >{tr("Sync steps:")}</span
+        >
+        <div class="flex items-center gap-2 flex-1 max-w-xs">
+          <input
+            type="range"
+            min="1"
+            max="100"
+            value={params.numSyncSteps ?? 1}
+            oninput={handleNumSyncStepsChange}
+            class="flex-1 h-1 bg-cai-medium-gray/50 rounded appearance-none cursor-pointer accent-cai-yellow"
+          />
+          <span class="text-xs font-mono text-cai-yellow w-8 text-right">
+            {params.numSyncSteps ?? "--"}
+          </span>
+          {#if params.numSyncSteps !== null}
+            <button
+              type="button"
+              onclick={clearNumSyncSteps}
+              class="text-cai-light-gray hover:text-cai-yellow transition-colors"
+              title={tr("Clear")}
+            >
+              <svg
+                class="w-3 h-3"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Row 4: Negative Prompt -->
+      <div class="flex flex-col gap-1.5">
+        <span class="text-xs text-cai-light-gray uppercase tracking-wider"
+          >{tr("Negative prompt:")}</span
+        >
+        <textarea
+          value={params.negativePrompt ?? ""}
+          oninput={handleNegativePromptChange}
+          placeholder={tr("Things to avoid in the image...")}
+          rows={2}
+          class="w-full bg-cai-medium-gray/50 border border-cai-yellow/30 rounded px-2 py-1.5 text-xs font-mono text-cai-yellow placeholder:text-cai-light-gray/50 resize-none transition-all duration-200 hover:border-cai-yellow/50 focus:outline-none focus:border-cai-yellow/70"
+        ></textarea>
+      </div>
+
+      <!-- Reset Button -->
+      <div class="flex justify-end pt-1">
+        <button
+          type="button"
+          onclick={handleReset}
+          class="text-xs font-mono tracking-wider uppercase text-cai-light-gray hover:text-cai-yellow transition-colors duration-200"
+        >
+          {tr("RESET TO DEFAULTS")}
+        </button>
+      </div>
+    </div>
+  {/if}
+</div>
+
+<style>
+  /* Custom range slider styling */
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #7dd3fc;
+    cursor: pointer;
+    border: none;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #7dd3fc;
+    cursor: pointer;
+    border: none;
+  }
+
+  /* Hide number input spinners */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+</style>

@@ -1,0 +1,851 @@
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index ca32ce1..7c1aac7 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -27,6 +27,7 @@ else()
+     endif()
+     add_subdirectory(tokenize)
+     add_subdirectory(cai-shard-probe)
++    add_subdirectory(cai-shard-engine)
+     add_subdirectory(parser)
+     add_subdirectory(tts)
+     add_subdirectory(mtmd)
+diff --git a/tools/cai-shard-engine/CMakeLists.txt b/tools/cai-shard-engine/CMakeLists.txt
+new file mode 100644
+index 0000000..4454a0b
+--- /dev/null
++++ b/tools/cai-shard-engine/CMakeLists.txt
+@@ -0,0 +1,12 @@
++set(TARGET llama-cai-shard-engine)
++add_executable(${TARGET}
++    cai-shard-engine.cpp
++    ../../examples/gguf-hash/deps/sha256/sha256.c)
++if(LLAMA_TOOLS_INSTALL)
++    install(TARGETS ${TARGET} RUNTIME)
++endif()
++target_include_directories(${TARGET} PRIVATE
++    ../../examples/gguf-hash/deps
++    ../../vendor)
++target_link_libraries(${TARGET} PRIVATE llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/cai-shard-engine/cai-shard-engine.cpp b/tools/cai-shard-engine/cai-shard-engine.cpp
+new file mode 100644
+index 0000000..e1f10bc
+--- /dev/null
++++ b/tools/cai-shard-engine/cai-shard-engine.cpp
+@@ -0,0 +1,815 @@
++#include "llama.h"
++
++#include "nlohmann/json.hpp"
++
++extern "C" {
++#include "sha256/sha256.h"
++}
++
++#include <algorithm>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <exception>
++#include <filesystem>
++#include <fstream>
++#include <iostream>
++#include <iterator>
++#include <limits>
++#include <memory>
++#include <sstream>
++#include <stdexcept>
++#include <string>
++#include <thread>
++#include <vector>
++
++using json = nlohmann::ordered_json;
++namespace fs = std::filesystem;
++
++static constexpr const char * PATCHED_BINARY_ABI = "cai-llama-cpp-patched-binary-request-v1";
++static constexpr const char * REAL_STATE_ABI     = "cai-llama-cpp-real-state-payload-v1";
++
++static void log_silence(ggml_log_level, const char *, void *) {}
++
++struct llama_model_deleter {
++    void operator()(llama_model * model) const { llama_model_free(model); }
++};
++
++struct llama_context_deleter {
++    void operator()(llama_context * ctx) const { llama_free(ctx); }
++};
++
++using model_ptr = std::unique_ptr<llama_model, llama_model_deleter>;
++using ctx_ptr   = std::unique_ptr<llama_context, llama_context_deleter>;
++
++struct runtime_t {
++    bool backend_initialized = false;
++    model_ptr model;
++    std::string model_path;
++    std::string artifact_kind;
++    bool assignment_validated = false;
++    int assignment_chunk_count = 0;
++    uint64_t assignment_covered_byte_count = 0;
++    std::string assignment_coverage_mode;
++};
++
++static void set_env(const char * name, const std::string & value) {
++#if defined(_WIN32)
++    _putenv_s(name, value.c_str());
++#else
++    setenv(name, value.c_str(), 1);
++#endif
++}
++
++static void unset_env(const char * name) {
++#if defined(_WIN32)
++    _putenv_s(name, "");
++#else
++    unsetenv(name);
++#endif
++}
++
++static void set_layer_range(bool enabled, int start, int end) {
++    if (!enabled) {
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_RANGE");
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_START");
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_END");
++        return;
++    }
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_RANGE", "1");
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_START", std::to_string(start));
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_END", std::to_string(end));
++}
++
++static int env_i32(const char * name, int fallback) {
++    const char * value = std::getenv(name);
++    if (value == nullptr || value[0] == '\0') {
++        return fallback;
++    }
++    char * end = nullptr;
++    long parsed = std::strtol(value, &end, 10);
++    if (end == value) {
++        return fallback;
++    }
++    parsed = std::max<long>(0, std::min<long>(parsed, std::numeric_limits<int>::max()));
++    return static_cast<int>(parsed);
++}
++
++static std::string read_stdin_all() {
++    std::ostringstream buffer;
++    buffer << std::cin.rdbuf();
++    return buffer.str();
++}
++
++static std::string read_text_file(const fs::path & path) {
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        throw std::runtime_error("could not open file: " + path.string());
++    }
++    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
++}
++
++static std::vector<uint8_t> read_binary_file(const fs::path & path) {
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        throw std::runtime_error("could not open file: " + path.string());
++    }
++    return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
++}
++
++static void write_binary_file(const fs::path & path, const void * data, size_t size) {
++    fs::create_directories(path.parent_path());
++    std::ofstream file(path, std::ios::binary);
++    if (!file) {
++        throw std::runtime_error("could not write file: " + path.string());
++    }
++    file.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
++}
++
++static std::string sha256_hex(const void * data, size_t size) {
++    unsigned char result[SHA256_DIGEST_SIZE];
++    sha256_hash(result, static_cast<const unsigned char *>(data), size);
++    char hex[SHA256_DIGEST_SIZE * 2 + 1] = {0};
++    for (int i = 0; i < SHA256_DIGEST_SIZE; ++i) {
++        std::snprintf(hex + i * 2, 3, "%02x", result[i]);
++    }
++    return std::string(hex);
++}
++
++static std::string sha256_digest_hex(const unsigned char * digest) {
++    char hex[SHA256_DIGEST_SIZE * 2 + 1] = {0};
++    for (int i = 0; i < SHA256_DIGEST_SIZE; ++i) {
++        std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
++    }
++    return std::string(hex);
++}
++
++static std::string sha256_hex(const std::vector<uint8_t> & bytes) {
++    return sha256_hex(bytes.data(), bytes.size());
++}
++
++static std::string sha256_hex(const std::string & value) {
++    return sha256_hex(value.data(), value.size());
++}
++
++static std::string model_meta_string(llama_model * model, const char * key) {
++    std::vector<char> buffer(128);
++    int n = llama_model_meta_val_str(model, key, buffer.data(), buffer.size());
++    if (n < 0) {
++        buffer.resize(static_cast<size_t>(-n) + 1);
++        n = llama_model_meta_val_str(model, key, buffer.data(), buffer.size());
++    }
++    if (n <= 0) {
++        return "";
++    }
++    return std::string(buffer.data(), static_cast<size_t>(n));
++}
++
++static fs::path json_path(const json & value, const std::string & key) {
++    if (!value.is_object() || !value.contains(key) || value[key].is_null()) {
++        return {};
++    }
++    return fs::path(value[key].get<std::string>());
++}
++
++static std::string json_string(const json & value, const std::string & key, const std::string & fallback = "") {
++    if (!value.is_object() || !value.contains(key) || value[key].is_null()) {
++        return fallback;
++    }
++    if (value[key].is_string()) {
++        return value[key].get<std::string>();
++    }
++    return fallback;
++}
++
++static int json_i32(const json & value, const std::string & key, int fallback = 0) {
++    if (!value.is_object() || !value.contains(key) || value[key].is_null()) {
++        return fallback;
++    }
++    if (value[key].is_number_integer()) {
++        return value[key].get<int>();
++    }
++    return fallback;
++}
++
++static bool json_bool(const json & value, const std::string & key, bool fallback = false) {
++    if (!value.is_object() || !value.contains(key) || value[key].is_null()) {
++        return fallback;
++    }
++    if (value[key].is_boolean()) {
++        return value[key].get<bool>();
++    }
++    return fallback;
++}
++
++static uint64_t json_u64(const json & value, const std::string & key, uint64_t fallback = 0) {
++    if (!value.is_object() || !value.contains(key) || value[key].is_null()) {
++        return fallback;
++    }
++    if (value[key].is_number_unsigned()) {
++        return value[key].get<uint64_t>();
++    }
++    if (value[key].is_number_integer()) {
++        const int64_t parsed = value[key].get<int64_t>();
++        return parsed < 0 ? fallback : static_cast<uint64_t>(parsed);
++    }
++    return fallback;
++}
++
++static std::string sha256_file_range(const fs::path & path, uint64_t offset, uint64_t size) {
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        throw std::runtime_error("could not open file for range hash: " + path.string());
++    }
++    file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
++    if (!file) {
++        throw std::runtime_error("could not seek assignment artifact range: " + path.string());
++    }
++    sha256_t ctx;
++    sha256_init(&ctx);
++    std::vector<unsigned char> buffer(1024 * 1024);
++    uint64_t remaining = size;
++    while (remaining > 0) {
++        const size_t step = static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
++        file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(step));
++        const std::streamsize got = file.gcount();
++        if (got != static_cast<std::streamsize>(step)) {
++            throw std::runtime_error("assignment artifact range is truncated: " + path.string());
++        }
++        sha256_update(&ctx, buffer.data(), step);
++        remaining -= static_cast<uint64_t>(step);
++    }
++    unsigned char digest[SHA256_DIGEST_SIZE];
++    sha256_final(&ctx, digest);
++    return sha256_digest_hex(digest);
++}
++
++static bool require_shard_only_loading(const json & request) {
++    if (json_bool(request, "requireShardOnlyLoading")) {
++        return true;
++    }
++    if (request.contains("productionRequirements") && request["productionRequirements"].is_object()) {
++        const json & requirements = request["productionRequirements"];
++        return json_bool(requirements, "requiresShardOnlyLoading") || json_bool(requirements, "forbidFullModelFallback");
++    }
++    return false;
++}
++
++struct assignment_validation_t {
++    bool valid = false;
++    int chunk_count = 0;
++    uint64_t covered_byte_count = 0;
++    std::string coverage_mode;
++};
++
++static assignment_validation_t validate_assignment_artifact(const json & request) {
++    if (!request.contains("assignmentArtifact") || !request["assignmentArtifact"].is_object()) {
++        throw std::runtime_error("assignmentArtifact is required for shard-only loading.");
++    }
++    const json & artifact = request["assignmentArtifact"];
++    const fs::path path(json_string(artifact, "localPath"));
++    if (path.empty()) {
++        throw std::runtime_error("assignmentArtifact.localPath is missing.");
++    }
++    if (!fs::exists(path) || !fs::is_regular_file(path)) {
++        throw std::runtime_error("assignmentArtifact.localPath is unavailable: " + path.string());
++    }
++    const uint64_t actual_size = static_cast<uint64_t>(fs::file_size(path));
++    const uint64_t declared_size = json_u64(artifact, "sizeBytes", actual_size);
++    if (declared_size != actual_size) {
++        throw std::runtime_error("assignmentArtifact.sizeBytes does not match local file size.");
++    }
++    if (!artifact.contains("coverage") || !artifact["coverage"].is_object()) {
++        throw std::runtime_error("assignmentArtifact.coverage is missing.");
++    }
++    const json & coverage = artifact["coverage"];
++    assignment_validation_t validation;
++    validation.coverage_mode = json_string(coverage, "materializationMode");
++    if (validation.coverage_mode != "sparse_full_size") {
++        throw std::runtime_error("assignmentArtifact.coverage materializationMode is unsupported.");
++    }
++    if (!json_bool(coverage, "zeroFilledOutsideCoveredRanges")) {
++        throw std::runtime_error("assignmentArtifact.coverage must declare zeroFilledOutsideCoveredRanges=true.");
++    }
++    if (json_u64(coverage, "artifactSizeBytes", actual_size) != actual_size) {
++        throw std::runtime_error("assignmentArtifact.coverage artifactSizeBytes mismatch.");
++    }
++    if (!artifact.contains("chunkRanges") || !artifact["chunkRanges"].is_array() || artifact["chunkRanges"].empty()) {
++        throw std::runtime_error("assignmentArtifact.chunkRanges are missing.");
++    }
++    uint64_t covered = 0;
++    int count = 0;
++    for (const json & chunk : artifact["chunkRanges"]) {
++        if (!chunk.is_object()) {
++            throw std::runtime_error("assignmentArtifact.chunkRanges item is invalid.");
++        }
++        const uint64_t offset = json_u64(chunk, "offsetBytes");
++        const uint64_t size = json_u64(chunk, "sizeBytes");
++        const std::string expected_hash = json_string(chunk, "sha256Hex");
++        if (size == 0 || expected_hash.size() != 64 || offset > actual_size || size > actual_size - offset) {
++            throw std::runtime_error("assignmentArtifact.chunkRanges item bounds/hash are invalid.");
++        }
++        const std::string actual_hash = sha256_file_range(path, offset, size);
++        if (actual_hash != expected_hash) {
++            throw std::runtime_error("assignmentArtifact chunk hash mismatch.");
++        }
++        covered += size;
++        count += 1;
++    }
++    const uint64_t declared_covered = json_u64(coverage, "coveredByteCount", covered);
++    const uint64_t declared_count = json_u64(coverage, "coveredRangeCount", static_cast<uint64_t>(count));
++    if (declared_covered != covered || declared_count != static_cast<uint64_t>(count)) {
++        throw std::runtime_error("assignmentArtifact.coverage range summary mismatch.");
++    }
++    validation.valid = true;
++    validation.chunk_count = count;
++    validation.covered_byte_count = covered;
++    return validation;
++}
++
++struct model_selection_t {
++    std::string path;
++    std::string artifact_kind;
++    assignment_validation_t assignment;
++};
++
++static model_selection_t select_model_artifact(const json & request) {
++    const bool require_assignment = require_shard_only_loading(request);
++    const bool assignment_present = request.contains("assignmentArtifact") && request["assignmentArtifact"].is_object();
++    if (require_assignment || (assignment_present && !(request.contains("modelArtifact") && request["modelArtifact"].is_object()))) {
++        assignment_validation_t validation = validate_assignment_artifact(request);
++        return model_selection_t{json_string(request["assignmentArtifact"], "localPath"), "assignment", validation};
++    }
++    if (request.contains("modelArtifact") && request["modelArtifact"].is_object()) {
++        const std::string path = json_string(request["modelArtifact"], "localPath");
++        if (!path.empty()) {
++            return model_selection_t{path, "model", assignment_validation_t{}};
++        }
++    }
++    if (assignment_present) {
++        assignment_validation_t validation = validate_assignment_artifact(request);
++        return model_selection_t{json_string(request["assignmentArtifact"], "localPath"), "assignment", validation};
++    }
++    if (request.contains("shardSpec") && request["shardSpec"].is_object()) {
++        const json & hint = request["shardSpec"].contains("artifactHint") ? request["shardSpec"]["artifactHint"] : json();
++        const std::string path = json_string(hint, "modelArtifactPath");
++        if (!path.empty()) {
++            return model_selection_t{path, "model", assignment_validation_t{}};
++        }
++    }
++    throw std::runtime_error("CAI shard engine could not resolve model path.");
++}
++
++static void ensure_backend(runtime_t & runtime) {
++    if (!runtime.backend_initialized) {
++        llama_log_set(log_silence, nullptr);
++        llama_backend_init();
++        runtime.backend_initialized = true;
++    }
++}
++
++static llama_model * ensure_model(runtime_t & runtime, const json & request) {
++    ensure_backend(runtime);
++    const model_selection_t selection = select_model_artifact(request);
++    if (runtime.model && runtime.model_path == selection.path) {
++        runtime.artifact_kind = selection.artifact_kind;
++        runtime.assignment_validated = selection.assignment.valid;
++        runtime.assignment_chunk_count = selection.assignment.chunk_count;
++        runtime.assignment_covered_byte_count = selection.assignment.covered_byte_count;
++        runtime.assignment_coverage_mode = selection.assignment.coverage_mode;
++        return runtime.model.get();
++    }
++    llama_model_params params = llama_model_default_params();
++    params.n_gpu_layers = env_i32("CAI_LLAMA_CPP_SHARD_N_GPU_LAYERS", 0);
++    model_ptr loaded(llama_model_load_from_file(selection.path.c_str(), params));
++    if (!loaded) {
++        throw std::runtime_error("CAI shard engine failed to load model: " + selection.path);
++    }
++    runtime.model = std::move(loaded);
++    runtime.model_path = selection.path;
++    runtime.artifact_kind = selection.artifact_kind;
++    runtime.assignment_validated = selection.assignment.valid;
++    runtime.assignment_chunk_count = selection.assignment.chunk_count;
++    runtime.assignment_covered_byte_count = selection.assignment.covered_byte_count;
++    runtime.assignment_coverage_mode = selection.assignment.coverage_mode;
++    return runtime.model.get();
++}
++
++static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string & text) {
++    std::vector<llama_token> tokens(std::max<size_t>(32, text.size() + 16));
++    int n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), tokens.data(), static_cast<int32_t>(tokens.size()), true, true);
++    if (n < 0) {
++        tokens.resize(static_cast<size_t>(-n));
++        n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), tokens.data(), static_cast<int32_t>(tokens.size()), true, true);
++    }
++    if (n <= 0) {
++        throw std::runtime_error("tokenization produced no tokens");
++    }
++    tokens.resize(static_cast<size_t>(n));
++    return tokens;
++}
++
++static ctx_ptr make_context(llama_model * model, int n_tokens, bool embeddings) {
++    llama_context_params params = llama_context_default_params();
++    params.n_ctx = static_cast<uint32_t>(std::max(512, n_tokens + 16));
++    params.n_batch = static_cast<uint32_t>(std::max(32, n_tokens));
++    params.n_ubatch = params.n_batch;
++    params.embeddings = embeddings;
++    params.no_perf = true;
++    int threads = env_i32("CAI_LLAMA_CPP_SHARD_THREADS", 0);
++    if (threads <= 0) {
++        threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
++    }
++    params.n_threads = threads;
++    params.n_threads_batch = threads;
++    ctx_ptr ctx(llama_init_from_model(model, params));
++    if (!ctx) {
++        throw std::runtime_error("failed to create llama context");
++    }
++    return ctx;
++}
++
++static llama_batch make_token_batch(const std::vector<llama_token> & tokens, bool logits_all) {
++    llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
++    batch.n_tokens = static_cast<int32_t>(tokens.size());
++    for (int32_t i = 0; i < batch.n_tokens; ++i) {
++        batch.token[i] = tokens[static_cast<size_t>(i)];
++        batch.pos[i] = i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = logits_all || i == batch.n_tokens - 1;
++    }
++    return batch;
++}
++
++static llama_batch make_embedding_batch(const std::vector<float> & embd, int n_tokens, int n_embd) {
++    llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
++    batch.n_tokens = n_tokens;
++    std::copy(embd.begin(), embd.end(), batch.embd);
++    for (int32_t i = 0; i < batch.n_tokens; ++i) {
++        batch.pos[i] = i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = i == batch.n_tokens - 1;
++    }
++    return batch;
++}
++
++static void decode_or_throw(llama_context * ctx, llama_batch batch, const char * label) {
++    const int rc = llama_decode(ctx, batch);
++    llama_batch_free(batch);
++    if (rc != 0) {
++        throw std::runtime_error(std::string(label) + " llama_decode failed: " + std::to_string(rc));
++    }
++}
++
++static std::vector<float> run_token_range(
++    llama_model * model,
++    const std::vector<llama_token> & tokens,
++    int layer_start,
++    int layer_end,
++    bool boundary_output) {
++    set_layer_range(true, layer_start, layer_end);
++    ctx_ptr ctx = make_context(model, static_cast<int>(tokens.size()), boundary_output);
++    decode_or_throw(ctx.get(), make_token_batch(tokens, boundary_output), "token-range");
++    if (!boundary_output) {
++        const llama_vocab * vocab = llama_model_get_vocab(model);
++        const int n_vocab = llama_vocab_n_tokens(vocab);
++        float * logits = llama_get_logits_ith(ctx.get(), -1);
++        if (logits == nullptr) {
++            throw std::runtime_error("llama_get_logits_ith returned null");
++        }
++        return std::vector<float>(logits, logits + n_vocab);
++    }
++    const int n_embd = llama_model_n_embd(model);
++    std::vector<float> activation(tokens.size() * static_cast<size_t>(n_embd));
++    for (int32_t i = 0; i < static_cast<int32_t>(tokens.size()); ++i) {
++        float * emb = llama_get_embeddings_ith(ctx.get(), i);
++        if (emb == nullptr) {
++            throw std::runtime_error("llama_get_embeddings_ith returned null");
++        }
++        std::copy(emb, emb + n_embd, activation.begin() + static_cast<size_t>(i) * static_cast<size_t>(n_embd));
++    }
++    return activation;
++}
++
++static std::vector<float> run_activation_range(
++    llama_model * model,
++    const std::vector<float> & activation,
++    int n_tokens,
++    int n_embd,
++    int layer_start,
++    int layer_end,
++    bool boundary_output) {
++    set_layer_range(true, layer_start, layer_end);
++    ctx_ptr ctx = make_context(model, n_tokens, boundary_output);
++    decode_or_throw(ctx.get(), make_embedding_batch(activation, n_tokens, n_embd), "activation-range");
++    if (!boundary_output) {
++        const llama_vocab * vocab = llama_model_get_vocab(model);
++        const int n_vocab = llama_vocab_n_tokens(vocab);
++        float * logits = llama_get_logits_ith(ctx.get(), -1);
++        if (logits == nullptr) {
++            throw std::runtime_error("llama_get_logits_ith returned null");
++        }
++        return std::vector<float>(logits, logits + n_vocab);
++    }
++    std::vector<float> output(static_cast<size_t>(n_tokens) * static_cast<size_t>(n_embd));
++    for (int32_t i = 0; i < n_tokens; ++i) {
++        float * emb = llama_get_embeddings_ith(ctx.get(), i);
++        if (emb == nullptr) {
++            throw std::runtime_error("llama_get_embeddings_ith returned null");
++        }
++        std::copy(emb, emb + n_embd, output.begin() + static_cast<size_t>(i) * static_cast<size_t>(n_embd));
++    }
++    return output;
++}
++
++static int argmax(const std::vector<float> & values) {
++    return static_cast<int>(std::distance(values.begin(), std::max_element(values.begin(), values.end())));
++}
++
++static std::string token_piece(const llama_vocab * vocab, llama_token token) {
++    std::vector<char> buf(64);
++    int n = llama_token_to_piece(vocab, token, buf.data(), static_cast<int32_t>(buf.size()), 0, false);
++    if (n < 0) {
++        buf.resize(static_cast<size_t>(-n));
++        n = llama_token_to_piece(vocab, token, buf.data(), static_cast<int32_t>(buf.size()), 0, false);
++    }
++    if (n <= 0) {
++        return std::to_string(token);
++    }
++    return std::string(buf.data(), static_cast<size_t>(n));
++}
++
++static std::vector<uint8_t> floats_to_bytes(const std::vector<float> & values) {
++    std::vector<uint8_t> bytes(values.size() * sizeof(float));
++    if (!values.empty()) {
++        std::memcpy(bytes.data(), values.data(), bytes.size());
++    }
++    return bytes;
++}
++
++static std::vector<float> bytes_to_floats(const std::vector<uint8_t> & bytes) {
++    if (bytes.size() % sizeof(float) != 0) {
++        throw std::runtime_error("activation state byte length is not float-aligned");
++    }
++    std::vector<float> values(bytes.size() / sizeof(float));
++    if (!bytes.empty()) {
++        std::memcpy(values.data(), bytes.data(), bytes.size());
++    }
++    return values;
++}
++
++static json file_ref(const fs::path & path, const std::vector<uint8_t> & payload) {
++    return json{
++        {"path", fs::absolute(path).string()},
++        {"sha256Hex", sha256_hex(payload)},
++        {"sizeBytes", payload.size()},
++    };
++}
++
++static json build_real_state_manifest(
++    const json & request,
++    const fs::path & state_path,
++    const std::vector<uint8_t> & state_payload,
++    int n_tokens,
++    int n_embd) {
++    const std::string output_kind = json_string(request, "expectedOutputKind");
++    std::string state_format;
++    if (output_kind == "activation_state") {
++        state_format = "ggml-tensor-v1/layer-range-activation-v1";
++    } else if (output_kind == "decode_state") {
++        state_format = "ggml-kv-cache-v1/token-step-kv-cache-v1";
++    } else {
++        throw std::runtime_error("cannot build real-state manifest for output kind: " + output_kind);
++    }
++    return json{
++        {"schemaVersion", 1},
++        {"abi", REAL_STATE_ABI},
++        {"stateKind", output_kind},
++        {"producedByAction", json_string(request, "action")},
++        {"modelId", json_string(request, "modelId")},
++        {"sessionId", json_string(request, "sessionId")},
++        {"layerStart", json_i32(request, "layerStart")},
++        {"layerEnd", json_i32(request, "layerEnd")},
++        {"tokenStart", json_i32(request, "tokenStart")},
++        {"tokenEnd", json_i32(request, "tokenEnd")},
++        {"stateFormat", state_format},
++        {"stateFile", file_ref(state_path, state_payload)},
++        {"metadata", json{
++            {"engine", "llama-cai-shard-engine"},
++            {"statePayloadEncoding", "raw-f32-le"},
++            {"statePayloadKind", "layer_range_activation"},
++            {"nTokens", n_tokens},
++            {"nEmbedding", n_embd},
++            {"floatCount", state_payload.size() / sizeof(float)},
++            {"layerRangeMath", true},
++        }},
++    };
++}
++
++static json output_file_response(
++    const fs::path & path,
++    const std::vector<uint8_t> & payload,
++    const std::string & output_kind,
++    const json & metrics) {
++    write_binary_file(path, payload.data(), payload.size());
++    return json{
++        {"status", "ok"},
++        {"realModelExecution", true},
++        {"realLayerExecution", true},
++        {"outputKind", output_kind},
++        {"outputPayloadFile", file_ref(path, payload)},
++        {"outputPayloadSha256Hex", sha256_hex(payload)},
++        {"metrics", metrics},
++    };
++}
++
++static json base_metrics(const runtime_t & runtime, const json & request, llama_model * model) {
++    const bool assignment_present = request.contains("assignmentArtifact") && request["assignmentArtifact"].is_object();
++    const bool model_present = request.contains("modelArtifact") && request["modelArtifact"].is_object();
++    json metrics = json{
++        {"binary", "llama-cai-shard-engine"},
++        {"binaryVersion", "cai-shard-engine/0.1"},
++        {"modelPath", runtime.model_path},
++        {"modelId", json_string(request, "modelId")},
++        {"layerStart", json_i32(request, "layerStart")},
++        {"layerEnd", json_i32(request, "layerEnd")},
++        {"ggufArchitecture", model_meta_string(model, "general.architecture")},
++        {"nLayer", llama_model_n_layer(model)},
++        {"nEmbedding", llama_model_n_embd(model)},
++        {"assignmentArtifactPresent", assignment_present},
++        {"modelArtifactPresent", model_present},
++        {"selectedArtifactKind", runtime.artifact_kind},
++        {"usedFullModelForLayerRange", runtime.artifact_kind != "assignment"},
++        {"shardOnlyLoadingReady", runtime.artifact_kind == "assignment" && runtime.assignment_validated},
++        {"layerRangeMath", true},
++    };
++    if (runtime.assignment_validated) {
++        metrics["assignmentArtifactValidated"] = true;
++        metrics["assignmentArtifactChunkCount"] = runtime.assignment_chunk_count;
++        metrics["assignmentArtifactCoveredByteCount"] = runtime.assignment_covered_byte_count;
++        metrics["assignmentArtifactCoverageMode"] = runtime.assignment_coverage_mode;
++    }
++    return metrics;
++}
++
++static std::vector<uint8_t> input_payload_bytes(const json & request) {
++    if (request.contains("inputPayloadFile") && request["inputPayloadFile"].is_object()) {
++        return read_binary_file(json_path(request["inputPayloadFile"], "path"));
++    }
++    return {};
++}
++
++static json handle_load_shard(runtime_t & runtime, const json & request) {
++    llama_model * model = ensure_model(runtime, request);
++    json metrics = base_metrics(runtime, request, model);
++    metrics["residentModelLoaded"] = true;
++    return json{
++        {"status", "ready"},
++        {"realModelExecution", true},
++        {"realLayerExecution", false},
++        {"metrics", metrics},
++    };
++}
++
++static json handle_process(runtime_t & runtime, const json & request) {
++    llama_model * model = ensure_model(runtime, request);
++    const llama_vocab * vocab = llama_model_get_vocab(model);
++    const int n_layer = llama_model_n_layer(model);
++    const int n_embd = llama_model_n_embd(model);
++    const int layer_start = json_i32(request, "layerStart");
++    const int layer_end = json_i32(request, "layerEnd", n_layer);
++    if (layer_start < 0 || layer_end <= layer_start || layer_end > n_layer) {
++        throw std::runtime_error("invalid layer range");
++    }
++    const std::string output_kind = json_string(request, "expectedOutputKind");
++    const bool final_output = output_kind == "final_output" || json_bool(request, "requiresFinalOutput");
++    const bool state_output = output_kind == "activation_state" || output_kind == "decode_state";
++    if (!final_output && !state_output) {
++        throw std::runtime_error("unsupported expectedOutputKind: " + output_kind);
++    }
++    const bool boundary_output = state_output;
++    std::vector<float> result;
++    int n_tokens = 0;
++    if (request.contains("inputState") && request["inputState"].is_object()) {
++        const json & input_state = request["inputState"];
++        const json & metadata = input_state.contains("metadata") ? input_state["metadata"] : json::object();
++        n_tokens = json_i32(metadata, "nTokens");
++        const int input_n_embd = json_i32(metadata, "nEmbedding");
++        if (n_tokens <= 0 || input_n_embd != n_embd) {
++            throw std::runtime_error("input activation state metadata is invalid");
++        }
++        const std::vector<uint8_t> state_bytes = read_binary_file(json_path(input_state["stateFile"], "path"));
++        const std::vector<float> activation = bytes_to_floats(state_bytes);
++        if (static_cast<int>(activation.size()) != n_tokens * n_embd) {
++            throw std::runtime_error("input activation state shape mismatch");
++        }
++        result = run_activation_range(model, activation, n_tokens, n_embd, layer_start, layer_end, boundary_output);
++    } else {
++        const std::vector<uint8_t> payload = input_payload_bytes(request);
++        const std::string prompt(reinterpret_cast<const char *>(payload.data()), payload.size());
++        const std::vector<llama_token> tokens = tokenize(vocab, prompt);
++        n_tokens = static_cast<int>(tokens.size());
++        result = run_token_range(model, tokens, layer_start, layer_end, boundary_output);
++    }
++    json metrics = base_metrics(runtime, request, model);
++    metrics["action"] = json_string(request, "action");
++    metrics["tokenCount"] = n_tokens;
++    if (final_output) {
++        const int token = argmax(result);
++        const std::string piece = token_piece(vocab, token);
++        std::vector<uint8_t> payload(piece.begin(), piece.end());
++        metrics["outputTokenId"] = token;
++        metrics["outputTokenCount"] = 1;
++        metrics["realLayerExecution"] = true;
++        return output_file_response(json_path(request["ioTargets"], "outputPayloadPath"), payload, "final_output", metrics);
++    }
++    const std::vector<uint8_t> state_payload = floats_to_bytes(result);
++    const fs::path state_path = json_path(request["ioTargets"], "outputStateFilePath");
++    write_binary_file(state_path, state_payload.data(), state_payload.size());
++    const json manifest = build_real_state_manifest(request, state_path, state_payload, n_tokens, n_embd);
++    const std::string manifest_text = manifest.dump(-1, ' ', false, json::error_handler_t::replace);
++    const std::vector<uint8_t> manifest_payload(manifest_text.begin(), manifest_text.end());
++    return output_file_response(json_path(request["ioTargets"], "outputStateManifestPath"), manifest_payload, output_kind, metrics);
++}
++
++static json handle_finalize(runtime_t & runtime, const json &) {
++    runtime.model.reset();
++    runtime.model_path.clear();
++    return json{
++        {"status", "ok"},
++        {"realModelExecution", true},
++        {"realLayerExecution", false},
++        {"metrics", json{{"binary", "llama-cai-shard-engine"}, {"residentModelFinalized", true}}},
++    };
++}
++
++static json handle_request(runtime_t & runtime, const json & request) {
++    if (!request.is_object()) {
++        throw std::runtime_error("request must be an object");
++    }
++    if (json_string(request, "abi") != PATCHED_BINARY_ABI) {
++        throw std::runtime_error("unsupported ABI");
++    }
++    const std::string action = json_string(request, "action");
++    if (action == "load_shard") {
++        return handle_load_shard(runtime, request);
++    }
++    if (action == "process_prefill" || action == "process_decode") {
++        return handle_process(runtime, request);
++    }
++    if (action == "finalize") {
++        return handle_finalize(runtime, request);
++    }
++    throw std::runtime_error("unsupported action: " + action);
++}
++
++static json error_response(const std::exception & exc) {
++    return json{
++        {"status", "error"},
++        {"error", exc.what()},
++        {"metrics", json{{"binary", "llama-cai-shard-engine"}}},
++    };
++}
++
++int main(int argc, char ** argv) {
++    runtime_t runtime;
++    bool jsonl = false;
++    for (int i = 1; i < argc; ++i) {
++        if (std::string(argv[i]) == "--jsonl") {
++            jsonl = true;
++        }
++    }
++    try {
++        if (jsonl) {
++            std::string line;
++            while (std::getline(std::cin, line)) {
++                if (line.empty()) {
++                    continue;
++                }
++                try {
++                    json response = handle_request(runtime, json::parse(line));
++                    std::cout << response.dump(-1, ' ', false, json::error_handler_t::replace) << std::endl;
++                } catch (const std::exception & exc) {
++                    std::cout << error_response(exc).dump(-1, ' ', false, json::error_handler_t::replace) << std::endl;
++                }
++            }
++        } else {
++            json response = handle_request(runtime, json::parse(read_stdin_all()));
++            std::cout << response.dump(-1, ' ', false, json::error_handler_t::replace) << std::endl;
++        }
++    } catch (const std::exception & exc) {
++        std::cout << error_response(exc).dump(-1, ' ', false, json::error_handler_t::replace) << std::endl;
++        if (runtime.backend_initialized) {
++            runtime.model.reset();
++            llama_backend_free();
++        }
++        return 1;
++    }
++    if (runtime.backend_initialized) {
++        runtime.model.reset();
++        llama_backend_free();
++    }
++    return 0;
++}

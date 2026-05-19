@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SUFeedURL</key>
+	<string>https://assets.CAIlabs.net/appcast.xml</string>
+	<key>CAIBuildTag</key>
+	<string>$(CAI_BUILD_TAG)</string>
+	<key>CAIBuildCommit</key>
+	<string>$(CAI_BUILD_COMMIT)</string>
+	<key>CAIBugReportPresignedUrlEndpoint</key>
+	<string>$(CAI_BUG_REPORT_PRESIGNED_URL_ENDPOINT)</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>cai needs local network access to discover and connect to other devices in your cluster for distributed AI inference.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_p2p._tcp</string>
+		<string>_p2p._udp</string>
+		<string>_libp2p._udp</string>
+	</array>
+</dict>
+</plist>

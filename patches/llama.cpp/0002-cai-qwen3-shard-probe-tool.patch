@@ -1,0 +1,362 @@
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index b433c91..ca32ce1 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -26,6 +26,7 @@ else()
+         add_subdirectory(server)
+     endif()
+     add_subdirectory(tokenize)
++    add_subdirectory(cai-shard-probe)
+     add_subdirectory(parser)
+     add_subdirectory(tts)
+     add_subdirectory(mtmd)
+diff --git a/tools/cai-shard-probe/CMakeLists.txt b/tools/cai-shard-probe/CMakeLists.txt
+new file mode 100644
+index 0000000..2eb257c
+--- /dev/null
++++ b/tools/cai-shard-probe/CMakeLists.txt
+@@ -0,0 +1,7 @@
++set(TARGET llama-cai-shard-probe)
++add_executable(${TARGET} cai-shard-probe.cpp)
++if(LLAMA_TOOLS_INSTALL)
++    install(TARGETS ${TARGET} RUNTIME)
++endif()
++target_link_libraries(${TARGET} PRIVATE llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/cai-shard-probe/cai-shard-probe.cpp b/tools/cai-shard-probe/cai-shard-probe.cpp
+new file mode 100644
+index 0000000..542f02d
+--- /dev/null
++++ b/tools/cai-shard-probe/cai-shard-probe.cpp
+@@ -0,0 +1,331 @@
++#include "llama.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <exception>
++#include <fstream>
++#include <iostream>
++#include <limits>
++#include <memory>
++#include <stdexcept>
++#include <string>
++#include <thread>
++#include <vector>
++
++struct args_t {
++    std::string model;
++    std::string model_id;
++    std::string architecture = "unknown";
++    std::string gguf_sha256;
++    std::string legacy_probe_abi;
++    std::string prompt = "The capital of France is";
++    int split_layer = -1;
++    int n_ctx = 0;
++    int n_gpu_layers = 0;
++    int n_threads = 0;
++    double tolerance = 1e-3;
++};
++
++static void log_silence(ggml_log_level, const char *, void *) {}
++
++static void usage(const char * argv0) {
++    std::cerr << "usage: " << argv0 << " -m model.gguf [--model-id id] [--architecture arch] [--gguf-sha256 hex] [--legacy-probe-abi abi] [--prompt text] [--split-layer n]\n";
++}
++
++static args_t parse_args(int argc, char ** argv) {
++    args_t args;
++    for (int i = 1; i < argc; ++i) {
++        const std::string key = argv[i];
++        auto need_value = [&](const char * name) -> std::string {
++            if (i + 1 >= argc) {
++                throw std::runtime_error(std::string("missing value for ") + name);
++            }
++            return argv[++i];
++        };
++        if (key == "-m" || key == "--model") {
++            args.model = need_value(key.c_str());
++        } else if (key == "--model-id") {
++            args.model_id = need_value(key.c_str());
++        } else if (key == "--architecture") {
++            args.architecture = need_value(key.c_str());
++        } else if (key == "--gguf-sha256") {
++            args.gguf_sha256 = need_value(key.c_str());
++        } else if (key == "--legacy-probe-abi") {
++            args.legacy_probe_abi = need_value(key.c_str());
++        } else if (key == "-p" || key == "--prompt") {
++            args.prompt = need_value(key.c_str());
++        } else if (key == "--split-layer") {
++            args.split_layer = std::stoi(need_value(key.c_str()));
++        } else if (key == "--ctx-size") {
++            args.n_ctx = std::stoi(need_value(key.c_str()));
++        } else if (key == "--gpu-layers") {
++            args.n_gpu_layers = std::stoi(need_value(key.c_str()));
++        } else if (key == "--threads") {
++            args.n_threads = std::stoi(need_value(key.c_str()));
++        } else if (key == "--tolerance") {
++            args.tolerance = std::stod(need_value(key.c_str()));
++        } else if (key == "-h" || key == "--help") {
++            usage(argv[0]);
++            std::exit(0);
++        } else {
++            throw std::runtime_error("unknown argument: " + key);
++        }
++    }
++    if (args.model.empty()) {
++        throw std::runtime_error("model path is required");
++    }
++    return args;
++}
++
++static void set_env(const char * name, const std::string & value) {
++#if defined(_WIN32)
++    _putenv_s(name, value.c_str());
++#else
++    setenv(name, value.c_str(), 1);
++#endif
++}
++
++static void unset_env(const char * name) {
++#if defined(_WIN32)
++    _putenv_s(name, "");
++#else
++    unsetenv(name);
++#endif
++}
++
++static void set_layer_range(bool enabled, int start, int end) {
++    if (!enabled) {
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_RANGE");
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_START");
++        unset_env("CAI_LLAMA_CPP_SHARD_LAYER_END");
++        return;
++    }
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_RANGE", "1");
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_START", std::to_string(start));
++    set_env("CAI_LLAMA_CPP_SHARD_LAYER_END", std::to_string(end));
++}
++
++struct llama_model_deleter {
++    void operator()(llama_model * model) const { llama_model_free(model); }
++};
++
++struct llama_context_deleter {
++    void operator()(llama_context * ctx) const { llama_free(ctx); }
++};
++
++using model_ptr = std::unique_ptr<llama_model, llama_model_deleter>;
++using ctx_ptr = std::unique_ptr<llama_context, llama_context_deleter>;
++
++static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string & text) {
++    std::vector<llama_token> tokens(std::max<size_t>(32, text.size() + 16));
++    int n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), tokens.data(), (int32_t) tokens.size(), true, true);
++    if (n < 0) {
++        tokens.resize((size_t) -n);
++        n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), tokens.data(), (int32_t) tokens.size(), true, true);
++    }
++    if (n <= 0) {
++        throw std::runtime_error("tokenization produced no tokens");
++    }
++    tokens.resize((size_t) n);
++    return tokens;
++}
++
++static ctx_ptr make_context(llama_model * model, const args_t & args, int n_tokens, bool embeddings) {
++    llama_context_params params = llama_context_default_params();
++    params.n_ctx = args.n_ctx > 0 ? (uint32_t) args.n_ctx : (uint32_t) std::max(512, n_tokens + 16);
++    params.n_batch = (uint32_t) std::max(32, n_tokens);
++    params.n_ubatch = params.n_batch;
++    params.embeddings = embeddings;
++    params.no_perf = true;
++    int threads = args.n_threads;
++    if (threads <= 0) {
++        threads = (int) std::max(1u, std::thread::hardware_concurrency());
++    }
++    params.n_threads = threads;
++    params.n_threads_batch = threads;
++    ctx_ptr ctx(llama_init_from_model(model, params));
++    if (!ctx) {
++        throw std::runtime_error("failed to create llama context");
++    }
++    return ctx;
++}
++
++static llama_batch make_token_batch(const std::vector<llama_token> & tokens, bool logits_all) {
++    llama_batch batch = llama_batch_init((int32_t) tokens.size(), 0, 1);
++    batch.n_tokens = (int32_t) tokens.size();
++    for (int32_t i = 0; i < batch.n_tokens; ++i) {
++        batch.token[i] = tokens[(size_t) i];
++        batch.pos[i] = i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = logits_all || i == batch.n_tokens - 1;
++    }
++    return batch;
++}
++
++static llama_batch make_embedding_batch(const std::vector<float> & embd, int n_tokens, int n_embd) {
++    llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
++    batch.n_tokens = n_tokens;
++    std::copy(embd.begin(), embd.end(), batch.embd);
++    for (int32_t i = 0; i < batch.n_tokens; ++i) {
++        batch.pos[i] = i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = i == batch.n_tokens - 1;
++    }
++    return batch;
++}
++
++static void decode_or_throw(llama_context * ctx, llama_batch batch, const char * label) {
++    const int rc = llama_decode(ctx, batch);
++    llama_batch_free(batch);
++    if (rc != 0) {
++        throw std::runtime_error(std::string(label) + " llama_decode failed: " + std::to_string(rc));
++    }
++}
++
++static std::vector<float> copy_last_logits(llama_context * ctx, int n_vocab) {
++    float * logits = llama_get_logits_ith(ctx, -1);
++    if (logits == nullptr) {
++        throw std::runtime_error("llama_get_logits_ith returned null");
++    }
++    return std::vector<float>(logits, logits + n_vocab);
++}
++
++static std::vector<float> run_full_logits(llama_model * model, const args_t & args, const std::vector<llama_token> & tokens, int n_vocab) {
++    set_layer_range(false, 0, 0);
++    ctx_ptr ctx = make_context(model, args, (int) tokens.size(), false);
++    decode_or_throw(ctx.get(), make_token_batch(tokens, false), "full");
++    return copy_last_logits(ctx.get(), n_vocab);
++}
++
++static std::vector<float> run_first_range_activation(llama_model * model, const args_t & args, const std::vector<llama_token> & tokens, int split_layer, int n_embd) {
++    set_layer_range(true, 0, split_layer);
++    ctx_ptr ctx = make_context(model, args, (int) tokens.size(), true);
++    decode_or_throw(ctx.get(), make_token_batch(tokens, true), "first-range");
++    std::vector<float> activation(tokens.size() * (size_t) n_embd);
++    for (int32_t i = 0; i < (int32_t) tokens.size(); ++i) {
++        float * emb = llama_get_embeddings_ith(ctx.get(), i);
++        if (emb == nullptr) {
++            throw std::runtime_error("llama_get_embeddings_ith returned null");
++        }
++        std::copy(emb, emb + n_embd, activation.begin() + (size_t) i * (size_t) n_embd);
++    }
++    return activation;
++}
++
++static std::vector<float> run_second_range_logits(llama_model * model, const args_t & args, const std::vector<float> & activation, int n_tokens, int n_embd, int split_layer, int n_layer, int n_vocab) {
++    set_layer_range(true, split_layer, n_layer);
++    ctx_ptr ctx = make_context(model, args, n_tokens, false);
++    decode_or_throw(ctx.get(), make_embedding_batch(activation, n_tokens, n_embd), "second-range");
++    return copy_last_logits(ctx.get(), n_vocab);
++}
++
++static int argmax(const std::vector<float> & values) {
++    return (int) std::distance(values.begin(), std::max_element(values.begin(), values.end()));
++}
++
++static std::string json_escape(const std::string & s) {
++    std::string out;
++    for (char c : s) {
++        if (c == '\\' || c == '"') {
++            out.push_back('\\');
++        }
++        out.push_back(c);
++    }
++    return out;
++}
++
++static long long file_size_bytes(const std::string & path) {
++    std::ifstream input(path, std::ios::binary | std::ios::ate);
++    if (!input) {
++        return 0;
++    }
++    return (long long) input.tellg();
++}
++
++int main(int argc, char ** argv) {
++    bool backend_initialized = false;
++    try {
++        args_t args = parse_args(argc, argv);
++        llama_log_set(log_silence, nullptr);
++        llama_backend_init();
++        backend_initialized = true;
++        llama_model_params model_params = llama_model_default_params();
++        model_params.n_gpu_layers = args.n_gpu_layers;
++        model_ptr model(llama_model_load_from_file(args.model.c_str(), model_params));
++        if (!model) {
++            throw std::runtime_error("failed to load model");
++        }
++        const llama_vocab * vocab = llama_model_get_vocab(model.get());
++        const std::vector<llama_token> tokens = tokenize(vocab, args.prompt);
++        const int n_layer = llama_model_n_layer(model.get());
++        const int n_embd = llama_model_n_embd(model.get());
++        const int n_vocab = llama_vocab_n_tokens(vocab);
++        const int split = args.split_layer > 0 ? args.split_layer : std::max(1, n_layer / 2);
++        if (split <= 0 || split >= n_layer) {
++            throw std::runtime_error("split layer must be inside model layer range");
++        }
++        const std::vector<float> full = run_full_logits(model.get(), args, tokens, n_vocab);
++        const std::vector<float> activation = run_first_range_activation(model.get(), args, tokens, split, n_embd);
++        const std::vector<float> sharded = run_second_range_logits(model.get(), args, activation, (int) tokens.size(), n_embd, split, n_layer, n_vocab);
++        double max_abs_diff = 0.0;
++        double sum_abs_diff = 0.0;
++        for (size_t i = 0; i < full.size(); ++i) {
++            const double diff = std::fabs((double) full[i] - (double) sharded[i]);
++            max_abs_diff = std::max(max_abs_diff, diff);
++            sum_abs_diff += diff;
++        }
++        const int full_top = argmax(full);
++        const int sharded_top = argmax(sharded);
++        const bool top_match = full_top == sharded_top;
++        const bool ok = top_match && max_abs_diff <= args.tolerance;
++        const long long gguf_size_bytes = file_size_bytes(args.model);
++        const std::string device_mode = args.n_gpu_layers > 0 ? "gpu" : "cpu";
++        std::cout << "{"
++                  << "\"status\":\"" << (ok ? "ok" : "mismatch") << "\","
++                  << "\"probeAbi\":\"cai-layer-range-v1\","
++                  << "\"legacyProbeAbi\":\"" << json_escape(args.legacy_probe_abi) << "\","
++                  << "\"model\":{"
++                  << "\"modelId\":\"" << json_escape(args.model_id) << "\","
++                  << "\"architecture\":\"" << json_escape(args.architecture) << "\","
++                  << "\"ggufFile\":\"" << json_escape(args.model) << "\","
++                  << "\"ggufSizeBytes\":" << gguf_size_bytes << ","
++                  << "\"ggufSha256Hex\":\"" << json_escape(args.gguf_sha256) << "\""
++                  << "},"
++                  << "\"execution\":{"
++                  << "\"deviceMode\":\"" << device_mode << "\""
++                  << "},"
++                  << "\"layerRange\":{"
++                  << "\"totalLayers\":" << n_layer << ","
++                  << "\"splitLayer\":" << split << ","
++                  << "\"tokenCount\":" << tokens.size() << ","
++                  << "\"nEmbedding\":" << n_embd << ","
++                  << "\"activationShape\":[" << tokens.size() << "," << n_embd << "],"
++                  << "\"activationFloatCount\":" << activation.size()
++                  << "},"
++                  << "\"result\":{"
++                  << "\"realLayerExecution\":true,"
++                  << "\"fullTopToken\":" << full_top << ","
++                  << "\"shardedTopToken\":" << sharded_top << ","
++                  << "\"topTokenMatch\":" << (top_match ? "true" : "false") << ","
++                  << "\"maxAbsDiff\":" << max_abs_diff << ","
++                  << "\"meanAbsDiff\":" << (sum_abs_diff / (double) full.size()) << ","
++                  << "\"tolerance\":" << args.tolerance
++                  << "}"
++                  << "}" << std::endl;
++        model.reset();
++        llama_backend_free();
++        backend_initialized = false;
++        return ok ? 0 : 2;
++    } catch (const std::exception & exc) {
++        std::cout << "{\"status\":\"error\",\"error\":\"" << json_escape(exc.what()) << "\"}" << std::endl;
++        if (backend_initialized) {
++            llama_backend_free();
++        }
++        return 1;
++    }
++}

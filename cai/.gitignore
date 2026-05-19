@@ -1,0 +1,53 @@
+# gitingest
+digest.txt
+
+# python
+**/__pycache__
+.pytest_cache/
+.venv/
+.venv-win/
+.venv-wsl/
+
+# nix
+.direnv/
+
+# IDEA (PyCharm)
+.idea
+
+# xcode / macos
+*.xcuserstate
+*.xcuserdata
+*.xcuserdatad/
+**/.DS_Store
+app/CAI/build/
+dist/
+
+
+# rust
+target/
+**/*.rs.bk
+*.pdb
+
+# svelte
+dashboard/build/
+dashboard/node_modules/
+dashboard/.svelte-kit/
+
+# host config snapshots
+hosts_*.json
+.swp
+
+# bench files
+bench/**/*.json
+
+# tmp
+tmp/models
+tmp/models_live.json
+tmp/qwen_instance_payload.json
+tmp/wsl-runtime/
+/build/cai
+/.claude/skills
+
+# local runtime state
+.CAI-*/
+.*-wsl-auto/

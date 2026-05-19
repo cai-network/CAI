@@ -1,0 +1,18 @@
+# One patch path per line, relative to this directory.
+# Keep this file ordered. The patched WSL build requires at least one
+# non-comment patch unless -AllowEmptyPatchSet is passed.
+0001-cai-qwen3-layer-range-graph.patch
+0002-cai-qwen3-shard-probe-tool.patch
+0003-cai-qwen3-layer-range-output-fix.patch
+0004-cai-qwen3-shard-engine-command.patch
+0005-cai-llama-layer-range-graph.patch
+0006-cai-qwen2-layer-range-graph.patch
+0007-cai-qwen-layer-range-graph.patch
+0008-cai-mistral3-layer-range-graph.patch
+0009-cai-gemma-layer-range-graph.patch
+0010-cai-gemma2-layer-range-graph.patch
+0011-cai-gemma3-layer-range-graph.patch
+0012-cai-phi3-layer-range-graph.patch
+0013-cai-phi2-layer-range-graph.patch
+0014-cai-falcon-layer-range-graph.patch
+0015-cai-gptneox-layer-range-graph.patch

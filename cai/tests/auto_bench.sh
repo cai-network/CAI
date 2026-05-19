@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: Apache-2.0
+#!/usr/bin/env bash
+
+[ $# -lt 1 ] && {
+  echo "Usage: $0 host1 [host2 ...]"
+  exit 1
+}
+
+[ -z "$(git status --porcelain)" ] || {
+  echo "Uncommitted changes"
+  exit 1
+}
+
+commit=$(git rev-parse HEAD)
+git fetch -q origin
+git branch -r --contains "$commit" | grep -qE '^\s*origin/' || {
+  echo "Not pushed to origin"
+  exit 1
+}
+hosts=("$@")
+
+for host; do
+  ssh -T -o BatchMode=yes -o ServerAliveInterval=30 "$host@$host" \
+    "CAI_LIBP2P_NAMESPACE=$commit /nix/var/nix/profiles/default/bin/nix build github:CAI-explore/CAI/$commit" &
+done
+wait
+
+cleanup() {
+  for host in "${hosts[@]}"; do
+    ssh -T -o BatchMode=yes "$host@$host" "pkill -f bin/cai" &
+  done
+  sleep 1
+  jobs -pr | xargs -r kill 2>/dev/null || true
+}
+trap 'cleanup' EXIT INT TERM
+
+for host; do
+  ssh -T -o BatchMode=yes -o ServerAliveInterval=30 "$host@$host" \
+    "CAI_LIBP2P_NAMESPACE=$commit /nix/var/nix/profiles/default/bin/nix run github:CAI-explore/CAI/$commit" &>/dev/null &
+done
+
+for host; do
+  echo "Waiting for $host..." 1>&2
+  until curl -sf "http://$host:52415/models" &>/dev/null; do sleep 1; done
+done
+
+echo "Waiting 30s for cluster setup" 1>&2
+sleep 30
+echo "cai loaded" 1>&2
+bench_runner="${hosts[0]}"
+mkdir -p "./bench/$commit"
+nix run .#cai-get-all-models-on-cluster -- "$bench_runner" | while IFS= read -r model; do
+  echo "running bench for $model" 1>&2
+  ssh -Tn -o BatchMode=yes -o ServerAliveInterval=30 "$bench_runner@$bench_runner" "/nix/var/nix/profiles/default/bin/nix run github:CAI-explore/CAI/$commit#cai-bench -- --model $model --pp 128 4096 --tg 128 --concurrency 1 3 8 --stdout --skip-tensor-ring" >>"./bench/$commit/${model//\//--}.json"
+  echo
+done
+

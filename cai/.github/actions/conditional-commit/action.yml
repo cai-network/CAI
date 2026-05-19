@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+# SPDX-FileCopyrightText: 2026 CAI contributors
+# SPDX-License-Identifier: Apache-2.0
+name: Commit if changed
+description: "Create a commit when the working tree is dirty"
+
+inputs:
+  message:
+    description: "Commit message"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Commit changed files
+      shell: bash
+      run: |
+        git diff --quiet && exit 0
+        git commit -am "${{ inputs.message }}"

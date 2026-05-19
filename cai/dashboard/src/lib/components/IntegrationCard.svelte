@@ -1,0 +1,68 @@
+<!--
+SPDX-FileCopyrightText: 2025 cai Technologies Ltd
+SPDX-FileCopyrightText: 2026 CAI contributors
+SPDX-License-Identifier: Apache-2.0
+-->
+<script lang="ts">
+  import { tr } from "$lib/stores/i18n.svelte";
+  import { copyText } from "$lib/utils/clipboard";
+
+  interface Props {
+    title: string;
+    subtitle: string;
+    config: string;
+    description?: string;
+    language?: "json" | "bash";
+  }
+
+  let {
+    title,
+    subtitle,
+    config,
+    description = "",
+    language = "json",
+  }: Props = $props();
+
+  let copied = $state(false);
+  let failed = $state(false);
+
+  async function copyToClipboard() {
+    const ok = await copyText(config);
+    if (ok) {
+      copied = true;
+      setTimeout(() => (copied = false), 2000);
+    } else {
+      failed = true;
+      setTimeout(() => (failed = false), 2000);
+    }
+  }
+</script>
+
+<div
+  class="border border-cai-light-gray/20 rounded-lg bg-cai-medium-gray/20 overflow-hidden"
+>
+  <div class="flex items-center justify-between px-5 py-4">
+    <div>
+      <h3 class="text-white text-sm font-semibold tracking-wide">{title}</h3>
+      <p class="text-cai-light-gray/60 text-xs mt-0.5 font-mono">{subtitle}</p>
+    </div>
+    <button
+      onclick={copyToClipboard}
+      class="px-3 py-1.5 text-xs rounded border transition-all duration-200 cursor-pointer
+        {copied
+        ? 'border-green-500/50 text-green-400 bg-green-500/10'
+        : failed
+          ? 'border-red-500/50 text-red-400 bg-red-500/10'
+          : 'border-cai-light-gray/30 text-cai-light-gray hover:border-cai-yellow/50 hover:text-cai-yellow'}"
+    >
+      {copied ? tr("Copied!") : failed ? tr("Copy failed") : tr("Copy")}
+    </button>
+  </div>
+  {#if description}
+    <p class="text-cai-light-gray/70 text-xs px-5 pb-3">{description}</p>
+  {/if}
+  <div class="bg-black/30 border-t border-cai-light-gray/10">
+    <pre
+      class="text-xs text-cai-light-gray/90 font-mono p-4 overflow-x-auto whitespace-pre">{config}</pre>
+  </div>
+</div>
