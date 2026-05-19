@@ -8,9 +8,9 @@ SPDX-License-Identifier: MIT
 
 CAI is an open decentralized network for LLM compute. It connects users, executors, validators, and developers into one system where model requests can run locally or through participant machines, while completed work is tracked and paid in the `CAICN` token.
 
-Current status: **mainnet alpha**. The core network cycle is already implemented: `CAICN` coins, wallet flows, transfers, settlement, and reward accounting work in the current network. The public network is still in an early experimental mode and is suitable for development, test deployments, early nodes, and gradual verification of real decentralized compute.
+🧪 Current status: **mainnet alpha**. The core network cycle is already implemented: `CAICN` coins, wallet flows, transfers, settlement, and reward accounting work in the current network. The public network is still in an early experimental mode and is suitable for development, test deployments, early nodes, and gradual verification of real decentralized compute.
 
-## CAI
+## 🌐 CAI
 
 CAI is built around a simple idea: AI compute does not have to live only inside centralized clouds. Network participants can provide resources, receive jobs, execute model work, and earn rewards. Users get an interface for model requests, while the network selects an available execution path.
 
@@ -21,7 +21,7 @@ CAI is useful for:
 - executors who want to connect CPU/GPU resources and earn for real work;
 - validators who confirm calculations, settlement, and network state.
 
-## What is implemented
+## ✅ What is implemented
 
 - Windows portable/desktop application with a web interface.
 - CAI wallet: creation, recovery, locking, unlocking, balances, and transfers.
@@ -37,7 +37,7 @@ CAI is useful for:
 - Hybrid post-quantum direction for wallets and signatures: Ed25519 + ML-DSA-65.
 - Documented developer fund, voting, and payout round confirmation rules.
 
-## What is being hardened
+## 🛠️ What is being hardened
 
 - Distributed inference between two or more physical PCs is under live verification.
 - The PC-to-PC data plane contains direct routes and relay/reverse-relay paths; live test stands verify that the validator does not become a data bottleneck.
@@ -47,7 +47,7 @@ CAI is useful for:
 - The post-quantum path uses hybrid signatures; governance, payout, validator, and transfer paths are checked for required PQ validation. A new founder wallet is only needed if the current seed does not recover the address fixed in genesis.
 - Public audit, load tests, and security review are part of preparation for a mature production network.
 
-## How it works
+## ⚙️ How it works
 
 1. A user opens CAI, creates or unlocks a wallet, and sends a model request.
 2. The request comes from the web UI, local API, or an external AI agent that uses CAI as a compute backend.
@@ -60,7 +60,7 @@ CAI is useful for:
 
 CAI follows one key architectural rule: the validator is not a permanent proxy for working data. Validators confirm state and accounting, while working data moves directly between nodes or through relay paths only where relay is needed for connectivity.
 
-## Economy
+## 💰 Economy
 
 Network currency: `CAICN` (`CAI Network Credit`).
 
@@ -73,7 +73,7 @@ Base model:
 - `98%` of an AI job price goes to executors;
 - `2%` goes to the validator settlement pool.
 
-## Features
+## ✨ Features
 
 - Useful-work focus: rewards are tied to AI compute, not empty activity.
 - Decentralized inference: executors connect real machines and participate in request processing.
@@ -83,7 +83,7 @@ Base model:
 - Open developer fund model that accounts for and rewards developer contributions.
 - Hybrid post-quantum security direction before mature public-network operation.
 
-## Integrations
+## 🔌 Integrations
 
 - `llama.cpp` / GGUF for local model execution.
 - OpenAI-style chat/completions path in the runtime API layer.
@@ -92,7 +92,7 @@ Base model:
 - Python CLI for wallet, validator, settlement, CAI startup, and checks.
 - Portable update, local launch tooling, and release artifact checks.
 
-## Requirements
+## 📋 Requirements
 
 To clone and run CAI from source, install:
 
@@ -105,7 +105,7 @@ To clone and run CAI from source, install:
 
 For real model execution, the machine also needs enough disk/RAM/VRAM for the selected GGUF model and a working `llama.cpp` runtime path. CAI can start without a loaded model, but inference requires a model/runtime that fits the device.
 
-## Quick start
+## 🚀 Quick start
 
 Windows:
 
@@ -147,7 +147,7 @@ Build the portable version:
 powershell -ExecutionPolicy Bypass -File .\tools\build-portable-win.ps1 -Zip
 ```
 
-## Documentation
+## 📚 Documentation
 
 Public documentation is available in [`docs/`](./docs):
 
@@ -159,6 +159,6 @@ Public documentation is available in [`docs/`](./docs):
 - [Developer contributions and rewards](./docs/CONTRIBUTING_AND_REWARDS.md)
 - [Security and limitations](./docs/SECURITY_AND_LIMITATIONS.md)
 
-## License
+## 📄 License
 
 The project is distributed under the [MIT](./LICENSE) license. Third-party components and dependencies keep their own licenses.
