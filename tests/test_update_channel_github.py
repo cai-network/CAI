@@ -10,8 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cai_compute_chain.update_channel import (
+    GitHubPortableUpdateSource,
     build_local_update_summary,
     check_for_updates,
+    fetch_github_portable_update_manifest,
     resolve_github_update_repository,
     update_status_path,
 )
@@ -141,6 +143,68 @@ class GitHubUpdateChannelBehaviorTests(unittest.TestCase):
             repository = resolve_github_update_repository(repo_root)
 
         self.assertEqual(repository, "octo/example")
+
+    def test_fetch_github_portable_update_manifest_uses_release_metadata(self) -> None:
+        source = GitHubPortableUpdateSource(
+            repository="octo/example",
+            release_tag="latest",
+            api_base_url="https://api.github.test",
+            repo_url="https://github.com/octo/example.git",
+            portable_asset_name="CAI-portable.zip",
+            manifest_asset_names=("portable-update-manifest.json",),
+            metadata_asset_names=("release-metadata.json",),
+        )
+        release_payload = {
+            "tag_name": "v0.1.0",
+            "target_commitish": "main",
+            "published_at": "2026-05-19T00:00:00Z",
+            "html_url": "https://github.com/octo/example/releases/tag/v0.1.0",
+            "assets": [
+                {
+                    "name": "CAI-portable.zip",
+                    "browser_download_url": "https://download.test/CAI-portable.zip",
+                    "size": 123,
+                },
+                {
+                    "name": "release-metadata.json",
+                    "browser_download_url": "https://download.test/release-metadata.json",
+                    "size": 456,
+                },
+            ],
+        }
+        metadata_payload = {
+            "version": "0.1.0",
+            "gitCommit": "abc123",
+            "gitBranch": "main",
+            "buildId": "0.1.0-0007-gabc123-20260519T000000Z",
+            "artifacts": [
+                {
+                    "name": "CAI-portable.zip",
+                    "path": ".dist/CAI-portable.zip",
+                    "sizeBytes": 123,
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+
+        def fake_fetch(url: str, *, timeout_sec: int) -> dict[str, object]:
+            if url.endswith("/releases/latest"):
+                return release_payload
+            if url == "https://download.test/release-metadata.json":
+                return metadata_payload
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with patch("cai_compute_chain.update_channel._fetch_json_payload", side_effect=fake_fetch):
+            manifest = fetch_github_portable_update_manifest(source, timeout_sec=1)
+
+        self.assertEqual(manifest["channel"], "github")
+        self.assertEqual(manifest["provider"], "github")
+        self.assertEqual(manifest["repository"], "octo/example")
+        self.assertEqual(manifest["installKind"], "portable")
+        self.assertEqual(manifest["archiveUrl"], "https://download.test/CAI-portable.zip")
+        self.assertEqual(manifest["archiveSha256"], "a" * 64)
+        self.assertEqual(manifest["archiveSizeBytes"], 123)
+        self.assertEqual(manifest["buildId"], "0.1.0-0007-gabc123-20260519T000000Z")
 
     def test_build_local_update_summary_reports_source_resolution_error(self) -> None:
         repo_root = self.temp_dir / "repo"

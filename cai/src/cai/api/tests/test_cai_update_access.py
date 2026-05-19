@@ -19,6 +19,9 @@ def _make_api(update_server_enabled: bool) -> API:
     app.get("/v1/cai/update-manifest")(api.get_cai_update_manifest)
     app.get("/v1/cai/update-package")(api.get_cai_update_package)
     app.get("/v1/cai/update-package.zip")(api.get_cai_update_package)
+    app.get("/v1/cai/update/status")(api.get_cai_update_status)
+    app.post("/v1/cai/update/check")(api.check_cai_update)
+    app.post("/v1/cai/update/apply")(api.apply_cai_update)
     return api
 
 
@@ -178,4 +181,40 @@ def test_update_package_zip_alias_returns_archive(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.content == b"portable-zip-bytes"
     archive_mock.assert_called_once_with(tmp_path, install_kind="portable")
+
+
+def test_update_status_check_and_apply_are_local_only() -> None:
+    api = _make_api(update_server_enabled=False)
+    remote_client = TestClient(api.app, client=("198.51.100.20", 40000))
+
+    assert remote_client.get("/v1/cai/update/status").status_code == 404
+    assert remote_client.post("/v1/cai/update/check").status_code == 404
+    assert remote_client.post("/v1/cai/update/apply").status_code == 404
+
+
+def test_update_status_check_and_apply_call_local_service() -> None:
+    api = _make_api(update_server_enabled=False)
+    local_client = TestClient(api.app, client=("127.0.0.1", 40000))
+
+    class Service:
+        def update_status(self) -> dict[str, object]:
+            return {"status": "ready"}
+
+        def check_update(self) -> dict[str, object]:
+            return {"status": "up_to_date"}
+
+        def apply_update(self) -> dict[str, object]:
+            return {"status": "updated"}
+
+    with patch.object(api, "_get_cai_service", return_value=Service()):
+        status_response = local_client.get("/v1/cai/update/status")
+        check_response = local_client.post("/v1/cai/update/check")
+        apply_response = local_client.post("/v1/cai/update/apply")
+
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "ready"
+    assert check_response.status_code == 200
+    assert check_response.json()["status"] == "up_to_date"
+    assert apply_response.status_code == 200
+    assert apply_response.json()["status"] == "updated"
 

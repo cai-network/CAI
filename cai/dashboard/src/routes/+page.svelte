@@ -69,6 +69,8 @@ SPDX-License-Identifier: Apache-2.0
     caiSummary,
     refreshCaiSummary,
     cancelCaiUpdate,
+    checkCaiUpdate,
+    applyCaiUpdate,
     CAI_WALLET_ACCESS_REQUIRED_EVENT,
     type DownloadProgress,
     type PlacementPreview,
@@ -112,6 +114,8 @@ SPDX-License-Identifier: Apache-2.0
   const caiRewardStatus = $derived(caiData?.reward ?? null);
   const caiUpdateStatus = $derived(caiData?.updates ?? null);
   let caiUpdateCancelBusy = $state(false);
+  let caiUpdateCheckBusy = $state(false);
+  let caiUpdateApplyBusy = $state(false);
   let updateLockOverlay: HTMLDivElement | undefined = $state();
   const caiUpdateActiveStatuses = new Set([
     "checking",
@@ -143,6 +147,7 @@ SPDX-License-Identifier: Apache-2.0
       ? caiUpdateInteractionLockedStatuses.has(caiUpdatePhase)
       : false;
   });
+  const caiUpdateActionBusy = $derived(caiUpdateCheckBusy || caiUpdateApplyBusy);
   const caiUpdateProgress = $derived.by(() => {
     const raw = Number(caiUpdateStatus?.progress);
     if (!Number.isFinite(raw)) return null;
@@ -150,7 +155,7 @@ SPDX-License-Identifier: Apache-2.0
   });
   const caiUpdateCurrent = $derived.by(() => {
     const status = String(caiData?.updates?.status ?? "").trim().toLowerCase();
-    if (status === "updated" || status === "up_to_date" || status === "ready") {
+    if (status === "updated" || status === "up_to_date") {
       return true;
     }
     if (status === "update_available" || status === "deferred") {
@@ -175,8 +180,8 @@ SPDX-License-Identifier: Apache-2.0
     const baseMessage =
       message ||
       (caiUpdatePhase === "restart_pending"
-        ? tr("update.restartHint")
-        : tr("update.processHint"));
+        ? t("update.restartHint")
+        : t("update.processHint"));
     const downloadDetail = caiUpdateDownloadDetail();
     return downloadDetail ? `${baseMessage} ${downloadDetail}` : baseMessage;
   }
@@ -237,53 +242,135 @@ SPDX-License-Identifier: Apache-2.0
     caiUpdateCancelBusy = true;
     try {
       await cancelCaiUpdate();
-      addToast({ type: "info", message: tr("update.cancelled") });
+      addToast({ type: "info", message: t("update.cancelled") });
     } catch (error) {
       addToast({
         type: "error",
-        message: error instanceof Error ? error.message : tr("update.cancelFailed"),
+        message: error instanceof Error ? error.message : t("update.cancelFailed"),
       });
     } finally {
       caiUpdateCancelBusy = false;
     }
   }
 
+  async function handleCheckCaiUpdate() {
+    if (caiUpdateActionBusy || caiUpdateInProgress) return;
+    caiUpdateCheckBusy = true;
+    try {
+      await checkCaiUpdate();
+      addToast({ type: "info", message: t("update.checked") });
+    } catch (error) {
+      addToast({
+        type: "error",
+        message: error instanceof Error ? error.message : t("update.checkFailed"),
+      });
+    } finally {
+      caiUpdateCheckBusy = false;
+    }
+  }
+
+  async function handleApplyCaiUpdate() {
+    if (caiUpdateActionBusy || caiUpdateInProgress) return;
+    caiUpdateApplyBusy = true;
+    try {
+      await applyCaiUpdate();
+      addToast({ type: "info", message: t("update.applyStarted") });
+    } catch (error) {
+      addToast({
+        type: "error",
+        message: error instanceof Error ? error.message : t("update.applyFailed"),
+      });
+    } finally {
+      caiUpdateApplyBusy = false;
+    }
+  }
+
+  function caiUpdateActionAvailable(): boolean {
+    return !caiUpdateInProgress && !caiUpdateStatus?.restartRequired;
+  }
+
+  function caiUpdateActionIsApply(): boolean {
+    return (
+      caiUpdateActionAvailable() &&
+      caiUpdateStatus?.updateAvailable === true &&
+      caiUpdateStatus?.canApply !== false
+    );
+  }
+
+  function caiUpdateActionLabel(): string {
+    if (caiUpdateApplyBusy) return t("update.applyingAction");
+    if (caiUpdateCheckBusy) return t("update.checkingAction");
+    return caiUpdateActionIsApply() ? t("update.applyAction") : t("update.checkAction");
+  }
+
+  async function handleCaiUpdateAction() {
+    if (caiUpdateActionIsApply()) {
+      await handleApplyCaiUpdate();
+      return;
+    }
+    await handleCheckCaiUpdate();
+  }
+
   function caiUpdateLabel(): string {
     if (caiUpdatePhase === "checking") {
-      return tr("update.stateChecking");
+      return t("update.stateChecking");
     }
     if (caiUpdatePhase === "downloading") {
-      return tr("update.stateDownloading");
+      return t("update.stateDownloading");
     }
     if (caiUpdatePhase === "waiting_for_idle") {
-      return tr("update.stateWaitingIdle");
+      return t("update.stateWaitingIdle");
     }
     if (caiUpdatePhase === "staging") {
-      return tr("update.stateStaging");
+      return t("update.stateStaging");
     }
     if (caiUpdatePhase === "restart_pending") {
-      return tr("update.stateRestartPending");
+      return t("update.stateRestartPending");
     }
     if (caiUpdatePhase === "applying") {
-      return tr("update.stateApplying");
+      return t("update.stateApplying");
     }
     if (caiUpdatePhase === "waiting_for_processes" || caiUpdatePhase === "closing") {
-      return tr("update.stateClosing");
+      return t("update.stateClosing");
     }
     if (caiUpdatePhase === "error") {
-      return tr("update.stateError");
+      return t("update.stateError");
     }
     if (caiUpdatePhase === "skipped") {
-      return tr("update.stateSkipped");
+      return t("update.stateSkipped");
+    }
+    if (caiUpdatePhase === "ready") {
+      return t("update.stateReady");
+    }
+    if (caiUpdatePhase === "update_available") {
+      return t("update.stateAvailable");
+    }
+    if (caiUpdatePhase === "disabled") {
+      return t("update.stateDisabled");
+    }
+    if (caiUpdatePhase === "unconfigured") {
+      return t("update.stateUnconfigured");
+    }
+    if (caiUpdatePhase === "unsupported") {
+      return t("update.stateUnsupported");
+    }
+    if (caiUpdatePhase === "cancelled") {
+      return t("update.stateCancelled");
+    }
+    if (caiUpdatePhase === "updated") {
+      return t("update.stateUpdated");
+    }
+    if (caiUpdatePhase === "up_to_date") {
+      return t("update.stateUpToDate");
     }
     if (caiUpdateInProgress) {
-      return tr("update.stateUpdating");
+      return t("update.stateUpdating");
     }
     if (caiUpdateCurrent === true) {
-      return tr("update.stateUpToDate");
+      return t("update.stateUpToDate");
     }
     if (caiUpdateCurrent === false) {
-      return tr("update.stateOutdated");
+      return t("update.stateOutdated");
     }
     return "";
   }
@@ -4677,14 +4764,25 @@ SPDX-License-Identifier: Apache-2.0
                     type="button"
                     class="ml-0.5 shrink-0 rounded border border-white/10 px-1 text-[8px] text-white/60 transition hover:border-red-300/45 hover:text-red-100 disabled:cursor-wait disabled:opacity-50"
                     disabled={caiUpdateCancelBusy}
-                    title={tr("update.cancel")}
-                    aria-label={tr("update.cancel")}
+                    title={t("update.cancel")}
+                    aria-label={t("update.cancel")}
                     onclick={handleCancelCaiUpdate}
                   >
                     x
                   </button>
                 {/if}
               </span>
+            {/if}
+            {#if caiUpdateActionAvailable()}
+              <button
+                type="button"
+                class="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] text-white/55 transition hover:border-cyan-300/45 hover:text-cyan-100 disabled:cursor-wait disabled:opacity-45"
+                disabled={caiUpdateActionBusy}
+                title={caiUpdateProcessMessage()}
+                onclick={handleCaiUpdateAction}
+              >
+                {caiUpdateActionLabel()}
+              </button>
             {/if}
           </div>
         {/if}
@@ -4756,14 +4854,25 @@ SPDX-License-Identifier: Apache-2.0
                     type="button"
                     class="ml-0.5 shrink-0 rounded border border-white/10 px-1 text-[8px] text-white/60 transition hover:border-red-300/45 hover:text-red-100 disabled:cursor-wait disabled:opacity-50"
                     disabled={caiUpdateCancelBusy}
-                    title={tr("update.cancel")}
-                    aria-label={tr("update.cancel")}
+                    title={t("update.cancel")}
+                    aria-label={t("update.cancel")}
                     onclick={handleCancelCaiUpdate}
                   >
                     x
                   </button>
                 {/if}
               </span>
+            {/if}
+            {#if caiUpdateActionAvailable()}
+              <button
+                type="button"
+                class="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] text-white/55 transition hover:border-cyan-300/45 hover:text-cyan-100 disabled:cursor-wait disabled:opacity-45"
+                disabled={caiUpdateActionBusy}
+                title={caiUpdateProcessMessage()}
+                onclick={handleCaiUpdateAction}
+              >
+                {caiUpdateActionLabel()}
+              </button>
             {/if}
           </div>
         {/if}
@@ -4863,7 +4972,7 @@ SPDX-License-Identifier: Apache-2.0
               id="cai-update-lock-title"
               class="text-xs font-mono uppercase tracking-[0.18em] text-white/85"
             >
-              {tr("update.lockTitle")}
+              {t("update.lockTitle")}
             </h2>
             <p class="mt-1 truncate text-[11px] font-mono uppercase tracking-[0.08em] text-cyan-100/70">
               {caiUpdateLabel()} {caiUpdateProgressLabel()}
@@ -4883,7 +4992,7 @@ SPDX-License-Identifier: Apache-2.0
           {caiUpdateProcessMessage()}
         </p>
         <p class="mt-2 text-xs leading-5 text-white/42">
-          {tr("update.lockHint")}
+          {t("update.lockHint")}
         </p>
         {#if caiUpdateStatus?.canCancel}
           <button
@@ -4892,7 +5001,7 @@ SPDX-License-Identifier: Apache-2.0
             disabled={caiUpdateCancelBusy}
             onclick={handleCancelCaiUpdate}
           >
-            {caiUpdateCancelBusy ? tr("update.cancelling") : tr("update.cancel")}
+            {caiUpdateCancelBusy ? t("update.cancelling") : t("update.cancel")}
           </button>
         {/if}
       </div>

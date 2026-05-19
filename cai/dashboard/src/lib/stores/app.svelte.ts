@@ -364,6 +364,10 @@ export interface CaiSummary {
     portableUpdatePlanPath?: string | null;
     portableUpdateScriptPath?: string | null;
     portableUpdateCancelPath?: string | null;
+    sourceResolutionError?: {
+      errorType?: string | null;
+      message?: string | null;
+    } | null;
     dashboardBuildStatus?: string | null;
     dashboardBuildMessage?: string | null;
   };
@@ -1934,6 +1938,30 @@ class AppStore {
     });
     if (!response.ok) {
       throw new Error(`Failed to cancel CAI update: ${response.status}`);
+    }
+    const result = await response.json();
+    await this.fetchCaiSummary();
+    return result;
+  }
+
+  async checkCaiUpdate() {
+    const response = await fetch("/v1/cai/update/check", {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to check CAI update: ${response.status}`);
+    }
+    const result = await response.json();
+    await this.fetchCaiSummary();
+    return result;
+  }
+
+  async applyCaiUpdate() {
+    const response = await fetch("/v1/cai/update/apply", {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to apply CAI update: ${response.status}`);
     }
     const result = await response.json();
     await this.fetchCaiSummary();
@@ -4352,6 +4380,8 @@ export const caiSummary = () => appStore.caiSummary;
 export const networkSummary = () => appStore.networkSummary;
 export const refreshCaiSummary = () => appStore.fetchCaiSummary();
 export const cancelCaiUpdate = () => appStore.cancelCaiUpdate();
+export const checkCaiUpdate = () => appStore.checkCaiUpdate();
+export const applyCaiUpdate = () => appStore.applyCaiUpdate();
 
 // Image generation params
 export const imageGenerationParams = () => appStore.getImageGenerationParams();

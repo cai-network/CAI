@@ -296,6 +296,37 @@ function Write-PortableReleaseMetadata {
     Write-Host "Portable build number: $buildNumberLabel"
 }
 
+function Update-PortableReleaseMetadataArtifact {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactPath
+    )
+
+    $metadataPath = Join-Path $DistRootFull "release-metadata.json"
+    if (-not (Test-Path -LiteralPath $metadataPath)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $ArtifactPath)) {
+        throw "Portable release artifact not found: $ArtifactPath"
+    }
+
+    $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    $artifact = Get-Item -LiteralPath $ArtifactPath
+    $relativePath = $artifact.FullName
+    if ($artifact.FullName.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $relativePath = $artifact.FullName.Substring($RepoRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    }
+    $metadata.artifacts = @(
+        [ordered]@{
+            name = $artifact.Name
+            path = $relativePath
+            sizeBytes = [int64]$artifact.Length
+            sha256 = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    )
+    Write-Utf8Json -Path $metadataPath -Value $metadata
+}
+
 New-Item -ItemType Directory -Force -Path $DistRootFull | Out-Null
 
 if (Test-Path $OutputDir) {
@@ -427,6 +458,7 @@ try {
             Remove-Item -LiteralPath $ZipPath -Force
         }
         Compress-Archive -Path (Join-Path $OutputDir '*') -DestinationPath $ZipPath -Force
+        Update-PortableReleaseMetadataArtifact -ArtifactPath $ZipPath
         Write-Host "Portable zip: $ZipPath"
     }
 

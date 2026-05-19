@@ -362,6 +362,34 @@ class CaiBridgeService:
     def cancel_update(self) -> dict[str, Any]:
         return self.modules.update_channel.cancel_pending_portable_update()
 
+    def update_status(self) -> dict[str, Any]:
+        summary = self.modules.update_channel.build_local_update_summary()
+        return summary.get("updates") or {}
+
+    def check_update(self) -> dict[str, Any]:
+        return self.modules.update_channel.check_for_updates(
+            self.modules.update_channel.resolve_repo_root(None),
+            timeout_sec=self.modules.update_channel.auto_update_check_timeout_seconds(),
+        )
+
+    def apply_update(self) -> dict[str, Any]:
+        root = self.modules.update_channel.resolve_repo_root(None)
+        install_kind = self.modules.update_channel.detect_local_update_install_kind(root)
+        timeout_sec = self.modules.update_channel.auto_update_check_timeout_seconds()
+        if install_kind == "portable":
+            return self.modules.update_channel.maybe_stage_portable_auto_update_on_launch(
+                root,
+                relaunch_command=[str(Path(sys.executable).resolve()), *sys.argv[1:]],
+                parent_pid=os.getpid(),
+                timeout_sec=timeout_sec,
+                idle_seconds=self.modules.update_channel.auto_update_idle_seconds(),
+                idle_timeout_sec=self.modules.update_channel.auto_update_idle_timeout_seconds(),
+            )
+        return self.modules.update_channel.apply_remote_update(
+            root,
+            timeout_sec=timeout_sec,
+        )
+
     def validator_set(self) -> dict[str, Any]:
         try:
             self.modules.node_config.refresh_validator_ha_lease(

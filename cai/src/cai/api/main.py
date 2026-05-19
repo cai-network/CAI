@@ -1858,6 +1858,9 @@ class API:
         self.app.get("/v1/cai/update-manifest")(self.get_cai_update_manifest)
         self.app.get("/v1/cai/update-package")(self.get_cai_update_package)
         self.app.get("/v1/cai/update-package.zip")(self.get_cai_update_package)
+        self.app.get("/v1/cai/update/status")(self.get_cai_update_status)
+        self.app.post("/v1/cai/update/check")(self.check_cai_update)
+        self.app.post("/v1/cai/update/apply")(self.apply_cai_update)
         self.app.post("/v1/cai/update/cancel")(self.cancel_cai_update)
         self.app.post("/v1/cai/update/activity")(self.record_cai_update_activity)
         self.app.post("/v1/cai/chat/completions", response_model=None)(
@@ -2322,6 +2325,27 @@ class API:
             archive_path,
             range_header=request.headers.get("range"),
         )
+
+    def get_cai_update_status(self, request: Request):
+        self._require_local_request(request)
+        try:
+            return self._get_cai_service().update_status()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    def check_cai_update(self, request: Request):
+        self._require_local_request(request)
+        try:
+            return self._get_cai_service().check_update()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    def apply_cai_update(self, request: Request):
+        self._require_local_request(request)
+        try:
+            return self._get_cai_service().apply_update()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     def cancel_cai_update(self, request: Request):
         self._require_local_request(request)

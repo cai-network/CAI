@@ -1375,7 +1375,7 @@ def test_check_for_updates_marks_unversioned_portable_outdated_by_remote_build_i
     assert result["canApply"] is True
 
 
-def test_check_for_updates_portable_prefers_validator_over_github_auto(tmp_path: Path) -> None:
+def test_check_for_updates_portable_uses_github_release_in_auto_channel(tmp_path: Path) -> None:
     portable_root = tmp_path / "portable"
     _create_portable_root(portable_root, app_value="local", include_data=False)
 
@@ -1387,7 +1387,7 @@ def test_check_for_updates_portable_prefers_validator_over_github_auto(tmp_path:
         },
         clear=False,
     ), patch(
-        "cai_compute_chain.update_channel.fetch_remote_update_manifest",
+        "cai_compute_chain.update_channel.fetch_github_update_manifest",
         return_value={
             "gitCommit": "portable-remote-commit",
             "gitBranch": "release",
@@ -1396,21 +1396,20 @@ def test_check_for_updates_portable_prefers_validator_over_github_auto(tmp_path:
             "repoKind": "portable",
             "archiveSha256": "0" * 64,
         },
-    ) as remote_manifest_mock, patch(
-        "cai_compute_chain.update_channel.fetch_github_update_manifest"
     ) as github_manifest_mock, patch(
-        "cai_compute_chain.update_channel.resolve_update_base_url",
-        return_value="http://validator:52415",
-    ):
+        "cai_compute_chain.update_channel.fetch_remote_update_manifest"
+    ) as remote_manifest_mock:
         result = check_for_updates(
             portable_root,
-            base_url="http://validator:52415",
             timeout_sec=1,
         )
 
-    assert result["channel"] == "validator"
-    remote_manifest_mock.assert_called_once()
-    github_manifest_mock.assert_not_called()
+    assert result["channel"] == "github"
+    assert result["repository"] == "octo/example"
+    assert result["remoteInstallKind"] == "portable"
+    assert result["canApply"] is True
+    github_manifest_mock.assert_called_once()
+    remote_manifest_mock.assert_not_called()
 
 
 def test_update_archive_rejects_tracked_api_token(tmp_path: Path) -> None:

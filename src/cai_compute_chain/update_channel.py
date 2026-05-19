@@ -54,6 +54,10 @@ UPDATE_GITHUB_REPOSITORY_ENV = "CAI_UPDATE_GITHUB_REPOSITORY"
 UPDATE_GITHUB_BRANCH_ENV = "CAI_UPDATE_GITHUB_BRANCH"
 UPDATE_GITHUB_TOKEN_ENV = "CAI_UPDATE_GITHUB_TOKEN"
 UPDATE_GITHUB_API_BASE_ENV = "CAI_UPDATE_GITHUB_API_BASE"
+UPDATE_GITHUB_RELEASE_TAG_ENV = "CAI_UPDATE_GITHUB_RELEASE_TAG"
+UPDATE_GITHUB_PORTABLE_ASSET_ENV = "CAI_UPDATE_GITHUB_PORTABLE_ASSET"
+UPDATE_GITHUB_PORTABLE_MANIFEST_ASSET_ENV = "CAI_UPDATE_GITHUB_PORTABLE_MANIFEST_ASSET"
+UPDATE_GITHUB_RELEASE_METADATA_ASSET_ENV = "CAI_UPDATE_GITHUB_RELEASE_METADATA_ASSET"
 UPDATE_SIGNING_SEED_ENV = "CAI_UPDATE_SIGNING_SEED_B64"
 UPDATE_SIGNING_PUBLIC_KEY_ENV = "CAI_UPDATE_SIGNING_PUBLIC_KEY_B64"
 UPDATE_TRUSTED_PUBLIC_KEYS_ENV = "CAI_UPDATE_TRUSTED_PUBLIC_KEYS_B64"
@@ -71,6 +75,18 @@ PORTABLE_UPDATE_APPLY_LOG_PATH = ".cai-update/apply-portable-update.log"
 UPDATE_ROLLBACK_MARKER_PATH = ".cai-update/rollback.json"
 UPDATE_ROLLBACK_BACKUP_PATH = ".cai-update/rollback-backup"
 GITHUB_API_BASE_URL = "https://api.github.com"
+DEFAULT_UPDATE_GITHUB_REPOSITORY = "cai-network/CAI"
+DEFAULT_GITHUB_RELEASE_TAG = "latest"
+DEFAULT_GITHUB_PORTABLE_ASSET = "CAI-portable.zip"
+DEFAULT_GITHUB_PORTABLE_MANIFEST_ASSETS: tuple[str, ...] = (
+    "portable-update-manifest.json",
+    "CAI-portable.zip.manifest.json",
+    "CAI-portable.manifest.json",
+)
+DEFAULT_GITHUB_RELEASE_METADATA_ASSETS: tuple[str, ...] = (
+    "release-metadata.json",
+    "CAI-release-metadata.json",
+)
 UPDATE_SIGNATURE_SCHEME_ED25519 = "cai-update-manifest-ed25519-v1"
 UPDATE_SIGNATURE_SCHEME_HYBRID = "cai-update-manifest-hybrid-ed25519-ml-dsa-65-v1"
 UPDATE_SIGNATURE_SCHEME = UPDATE_SIGNATURE_SCHEME_HYBRID
@@ -142,6 +158,17 @@ class GitHubUpdateSource:
     branch: str
     api_base_url: str
     repo_url: str
+
+
+@dataclass(frozen=True)
+class GitHubPortableUpdateSource:
+    repository: str
+    release_tag: str
+    api_base_url: str
+    repo_url: str
+    portable_asset_name: str
+    manifest_asset_names: tuple[str, ...]
+    metadata_asset_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -541,7 +568,7 @@ def resolve_update_source(
     repo_root: Path,
     *,
     base_url: str | None = None,
-) -> GitHubUpdateSource | ValidatorUpdateSource:
+) -> GitHubUpdateSource | GitHubPortableUpdateSource | ValidatorUpdateSource:
     root = resolve_repo_root(repo_root)
     local_state = collect_local_update_state(root)
     configured_channel = str(os.getenv(UPDATE_CHANNEL_ENV) or "auto").strip().lower() or "auto"
@@ -552,16 +579,32 @@ def resolve_update_source(
             "Expected one of: auto, github, validator."
         )
 
-    if local_state.install_kind == "portable" and configured_channel == "github":
-        raise UpdateError("Portable CAI installs can only update from a validator package.")
+    if configured_channel == "auto" and str(base_url or "").strip():
+        return ValidatorUpdateSource(base_url=resolve_update_base_url(explicit_base_url=base_url))
 
-    if local_state.install_kind != "portable" and configured_channel in {"auto", "github"}:
-        github_repository = resolve_github_update_repository(root)
+    if configured_channel in {"auto", "github"}:
+        github_repository = resolve_github_update_repository(
+            root,
+            allow_default=(
+                local_state.install_kind == "portable"
+                or configured_channel == "github"
+            ),
+        )
         if github_repository:
-            github_branch = resolve_github_update_branch(local_state)
             api_base_url = str(os.getenv(UPDATE_GITHUB_API_BASE_ENV) or GITHUB_API_BASE_URL).strip().rstrip("/")
             if not api_base_url:
                 api_base_url = GITHUB_API_BASE_URL
+            if local_state.install_kind == "portable":
+                return GitHubPortableUpdateSource(
+                    repository=github_repository,
+                    release_tag=resolve_github_release_tag(),
+                    api_base_url=api_base_url,
+                    repo_url=f"https://github.com/{github_repository}.git",
+                    portable_asset_name=resolve_github_portable_asset_name(),
+                    manifest_asset_names=resolve_github_portable_manifest_asset_names(),
+                    metadata_asset_names=resolve_github_release_metadata_asset_names(),
+                )
+            github_branch = resolve_github_update_branch(local_state)
             return GitHubUpdateSource(
                 repository=github_repository,
                 branch=github_branch,
@@ -577,7 +620,11 @@ def resolve_update_source(
     return ValidatorUpdateSource(base_url=resolve_update_base_url(explicit_base_url=base_url))
 
 
-def resolve_github_update_repository(repo_root: Path) -> str | None:
+def resolve_github_update_repository(
+    repo_root: Path,
+    *,
+    allow_default: bool = False,
+) -> str | None:
     configured_repository = str(os.getenv(UPDATE_GITHUB_REPOSITORY_ENV) or "").strip()
     if configured_repository:
         normalized = _normalize_github_repository(configured_repository)
@@ -589,9 +636,9 @@ def resolve_github_update_repository(repo_root: Path) -> str | None:
         return normalized
 
     origin_url = _git_remote_origin_url(resolve_repo_root(repo_root))
-    if not origin_url:
-        return None
-    return _normalize_github_repository(origin_url)
+    if origin_url:
+        return _normalize_github_repository(origin_url)
+    return DEFAULT_UPDATE_GITHUB_REPOSITORY if allow_default else None
 
 
 def resolve_github_update_branch(local_state: LocalUpdateState) -> str:
@@ -601,6 +648,38 @@ def resolve_github_update_branch(local_state: LocalUpdateState) -> str:
     if local_state.git_branch and local_state.git_branch != "HEAD":
         return local_state.git_branch
     return "main"
+
+
+def resolve_github_release_tag() -> str:
+    configured = str(os.getenv(UPDATE_GITHUB_RELEASE_TAG_ENV) or "").strip()
+    return configured or DEFAULT_GITHUB_RELEASE_TAG
+
+
+def resolve_github_portable_asset_name() -> str:
+    configured = str(os.getenv(UPDATE_GITHUB_PORTABLE_ASSET_ENV) or "").strip()
+    return configured or DEFAULT_GITHUB_PORTABLE_ASSET
+
+
+def _env_csv_names(env_name: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
+    configured = str(os.getenv(env_name) or "").strip()
+    if not configured:
+        return defaults
+    names = tuple(item.strip() for item in re.split(r"[,;\n]+", configured) if item.strip())
+    return names or defaults
+
+
+def resolve_github_portable_manifest_asset_names() -> tuple[str, ...]:
+    return _env_csv_names(
+        UPDATE_GITHUB_PORTABLE_MANIFEST_ASSET_ENV,
+        DEFAULT_GITHUB_PORTABLE_MANIFEST_ASSETS,
+    )
+
+
+def resolve_github_release_metadata_asset_names() -> tuple[str, ...]:
+    return _env_csv_names(
+        UPDATE_GITHUB_RELEASE_METADATA_ASSET_ENV,
+        DEFAULT_GITHUB_RELEASE_METADATA_ASSETS,
+    )
 
 
 def _portable_archive_cache_name(portable_root: Path) -> str:
@@ -873,6 +952,16 @@ def fetch_remote_update_manifest(
 
 
 def fetch_github_update_manifest(
+    source: GitHubUpdateSource | GitHubPortableUpdateSource,
+    *,
+    timeout_sec: int = 10,
+) -> dict[str, Any]:
+    if isinstance(source, GitHubPortableUpdateSource):
+        return fetch_github_portable_update_manifest(source, timeout_sec=timeout_sec)
+    return fetch_github_source_update_manifest(source, timeout_sec=timeout_sec)
+
+
+def fetch_github_source_update_manifest(
     source: GitHubUpdateSource,
     *,
     timeout_sec: int = 10,
@@ -913,6 +1002,242 @@ def fetch_github_update_manifest(
         "commitUrl": payload.get("html_url"),
         "version": None,
     }
+
+
+def fetch_github_portable_update_manifest(
+    source: GitHubPortableUpdateSource,
+    *,
+    timeout_sec: int = 10,
+) -> dict[str, Any]:
+    release_payload = _fetch_github_release(source, timeout_sec=timeout_sec)
+    assets = _github_release_assets(source, release_payload, timeout_sec=timeout_sec)
+    manifest_asset = _github_asset_by_names(assets, source.manifest_asset_names)
+    archive_asset = _github_asset_by_names(assets, (source.portable_asset_name,))
+    if archive_asset is None:
+        raise UpdateError(
+            "GitHub release does not include the CAI portable update asset "
+            f"{source.portable_asset_name!r}."
+        )
+
+    metadata = _fetch_github_release_metadata(
+        source,
+        assets,
+        timeout_sec=timeout_sec,
+    )
+    if manifest_asset is not None:
+        manifest = _fetch_json_payload(
+            str(manifest_asset.get("browser_download_url") or ""),
+            timeout_sec=timeout_sec,
+        )
+        if not isinstance(manifest, dict):
+            raise UpdateError(
+                f"GitHub release manifest asset {manifest_asset.get('name')!r} is not JSON."
+            )
+        manifest = dict(manifest)
+        manifest.setdefault("archiveUrl", archive_asset.get("browser_download_url"))
+        manifest.setdefault("archiveSizeBytes", _optional_int(archive_asset.get("size"), default=0))
+    else:
+        manifest = _github_portable_manifest_from_release(
+            source,
+            release_payload=release_payload,
+            archive_asset=archive_asset,
+            release_metadata=metadata,
+        )
+
+    artifact_metadata = _release_metadata_artifact(
+        metadata,
+        asset_name=str(archive_asset.get("name") or source.portable_asset_name),
+    )
+    manifest.setdefault("manifestVersion", UPDATE_MANIFEST_VERSION)
+    manifest.setdefault("protocolVersion", UPDATE_PROTOCOL_VERSION)
+    manifest.setdefault("minCompatibleProtocolVersion", UPDATE_MIN_COMPATIBLE_PROTOCOL_VERSION)
+    manifest.setdefault("maxCompatibleProtocolVersion", UPDATE_PROTOCOL_VERSION)
+    manifest.setdefault("channel", "github")
+    manifest.setdefault("provider", "github")
+    manifest.setdefault("repository", source.repository)
+    manifest.setdefault("repoUrl", source.repo_url.removesuffix(".git"))
+    manifest.setdefault("releaseTag", release_payload.get("tag_name") or source.release_tag)
+    manifest.setdefault("releaseUrl", release_payload.get("html_url"))
+    manifest.setdefault("repoKind", "portable")
+    manifest.setdefault("installKind", "portable")
+    manifest.setdefault("version", _release_metadata_string(metadata, "version"))
+    manifest.setdefault("gitCommit", _release_metadata_string(metadata, "gitCommit"))
+    manifest.setdefault("gitBranch", _release_metadata_string(metadata, "gitBranch"))
+    manifest.setdefault("buildId", _release_metadata_string(metadata, "buildId"))
+    manifest.setdefault("archiveUrl", archive_asset.get("browser_download_url"))
+    manifest.setdefault(
+        "archiveSizeBytes",
+        _optional_int(
+            (artifact_metadata or {}).get("sizeBytes"),
+            default=_optional_int(archive_asset.get("size"), default=0),
+        ),
+    )
+    if not str(manifest.get("archiveSha256") or "").strip():
+        manifest["archiveSha256"] = (
+            str((artifact_metadata or {}).get("sha256") or "").strip().lower()
+            or _github_asset_sha256(archive_asset)
+        )
+    if not str(manifest.get("archiveSha256") or "").strip():
+        raise UpdateError(
+            "GitHub release portable update metadata is missing archiveSha256. "
+            "Publish portable-update-manifest.json or release-metadata.json with the "
+            f"{source.portable_asset_name} SHA-256."
+        )
+    return manifest
+
+
+def _fetch_github_release(
+    source: GitHubPortableUpdateSource,
+    *,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    if source.release_tag.lower() == "latest":
+        release_url = f"{source.api_base_url}/repos/{source.repository}/releases/latest"
+    else:
+        release_url = (
+            f"{source.api_base_url}/repos/{source.repository}/releases/tags/"
+            f"{quote(source.release_tag, safe='')}"
+        )
+    payload = _fetch_json_payload(release_url, timeout_sec=timeout_sec)
+    if not isinstance(payload, dict):
+        raise UpdateError(f"GitHub release response at {release_url} is not a JSON object.")
+    return payload
+
+
+def _github_release_assets(
+    source: GitHubPortableUpdateSource,
+    release_payload: dict[str, Any],
+    *,
+    timeout_sec: int,
+) -> list[dict[str, Any]]:
+    inline_assets = release_payload.get("assets")
+    if isinstance(inline_assets, list):
+        return [item for item in inline_assets if isinstance(item, dict)]
+
+    assets_url = str(release_payload.get("assets_url") or "").strip()
+    if not assets_url:
+        return []
+    separator = "&" if "?" in assets_url else "?"
+    payload = _fetch_json_payload(
+        f"{assets_url}{separator}per_page=100",
+        timeout_sec=timeout_sec,
+    )
+    if not isinstance(payload, list):
+        raise UpdateError(
+            f"GitHub release assets response for {source.repository} is not a JSON array."
+        )
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _github_asset_by_names(
+    assets: list[dict[str, Any]],
+    names: tuple[str, ...],
+) -> dict[str, Any] | None:
+    normalized_names = {name.strip().lower() for name in names if name.strip()}
+    if not normalized_names:
+        return None
+    for asset in assets:
+        if str(asset.get("name") or "").strip().lower() in normalized_names:
+            return asset
+    return None
+
+
+def _fetch_github_release_metadata(
+    source: GitHubPortableUpdateSource,
+    assets: list[dict[str, Any]],
+    *,
+    timeout_sec: int,
+) -> dict[str, Any] | None:
+    metadata_asset = _github_asset_by_names(assets, source.metadata_asset_names)
+    if metadata_asset is None:
+        return None
+    metadata_url = str(metadata_asset.get("browser_download_url") or "").strip()
+    if not metadata_url:
+        return None
+    payload = _fetch_json_payload(metadata_url, timeout_sec=timeout_sec)
+    if not isinstance(payload, dict):
+        raise UpdateError(
+            f"GitHub release metadata asset {metadata_asset.get('name')!r} is not JSON."
+        )
+    return payload
+
+
+def _github_portable_manifest_from_release(
+    source: GitHubPortableUpdateSource,
+    *,
+    release_payload: dict[str, Any],
+    archive_asset: dict[str, Any],
+    release_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    artifact_metadata = _release_metadata_artifact(
+        release_metadata,
+        asset_name=str(archive_asset.get("name") or source.portable_asset_name),
+    )
+    archive_sha256 = (
+        str((artifact_metadata or {}).get("sha256") or "").strip().lower()
+        or _github_asset_sha256(archive_asset)
+    )
+    archive_size = _optional_int(
+        (artifact_metadata or {}).get("sizeBytes"),
+        default=_optional_int(archive_asset.get("size"), default=0),
+    )
+    release_tag = str(release_payload.get("tag_name") or source.release_tag).strip()
+    target_commitish = str(release_payload.get("target_commitish") or "").strip() or None
+    return {
+        "manifestVersion": UPDATE_MANIFEST_VERSION,
+        "protocolVersion": UPDATE_PROTOCOL_VERSION,
+        "minCompatibleProtocolVersion": UPDATE_MIN_COMPATIBLE_PROTOCOL_VERSION,
+        "maxCompatibleProtocolVersion": UPDATE_PROTOCOL_VERSION,
+        "channel": "github",
+        "provider": "github",
+        "repository": source.repository,
+        "version": _release_metadata_string(release_metadata, "version") or release_tag,
+        "generatedAt": release_payload.get("published_at")
+        or release_payload.get("created_at")
+        or datetime.now(tz=UTC).isoformat(),
+        "gitCommit": _release_metadata_string(release_metadata, "gitCommit")
+        or target_commitish,
+        "gitBranch": _release_metadata_string(release_metadata, "gitBranch")
+        or target_commitish,
+        "gitDirty": bool((release_metadata or {}).get("gitDirty", False)),
+        "buildId": _release_metadata_string(release_metadata, "buildId"),
+        "releaseTag": release_tag,
+        "releaseUrl": release_payload.get("html_url"),
+        "archiveUrl": archive_asset.get("browser_download_url"),
+        "archiveSha256": archive_sha256,
+        "archiveSizeBytes": archive_size,
+        "repoKind": "portable",
+        "installKind": "portable",
+    }
+
+
+def _release_metadata_artifact(
+    metadata: dict[str, Any] | None,
+    *,
+    asset_name: str,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    artifacts = metadata.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    normalized_asset_name = asset_name.strip().lower()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_name = str(artifact.get("name") or "").strip().lower()
+        artifact_path_name = Path(str(artifact.get("path") or "")).name.lower()
+        if normalized_asset_name in {artifact_name, artifact_path_name}:
+            return artifact
+    return None
+
+
+def _github_asset_sha256(asset: dict[str, Any]) -> str:
+    digest = str(asset.get("digest") or "").strip().lower()
+    if digest.startswith("sha256:"):
+        value = digest.split(":", 1)[1].strip()
+        return value if _is_sha256_hex(value) else ""
+    return ""
 
 
 def _remote_install_kind(manifest: dict[str, Any], *, default: str = "source") -> str:
@@ -959,13 +1284,19 @@ def check_for_updates(
     root = resolve_repo_root(repo_root)
     local_state = collect_local_update_state(root)
     source = resolve_update_source(root, base_url=base_url)
-    if isinstance(source, GitHubUpdateSource):
+    if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource)):
         remote_manifest = fetch_github_update_manifest(source, timeout_sec=timeout_sec)
+        if isinstance(source, GitHubPortableUpdateSource):
+            validate_update_manifest(remote_manifest, require_archive_hash=True)
         channel = "github"
-        source_url = f"{source.repo_url.removesuffix('.git')}/tree/{source.branch}"
+        source_url = _github_source_display_url(source)
         base_url_value = None
         repository = source.repository
-        target_branch = source.branch
+        target_branch = (
+            source.branch
+            if isinstance(source, GitHubUpdateSource)
+            else remote_manifest.get("gitBranch") or remote_manifest.get("releaseTag")
+        )
     else:
         remote_manifest = fetch_remote_update_manifest(
             base_url=source.base_url,
@@ -1048,7 +1379,9 @@ def apply_remote_update(
     target_install_kind = local_state.install_kind
     can_apply, apply_reason = _can_apply_update(
         local_state,
-        target_channel="github" if isinstance(source, GitHubUpdateSource) else "validator",
+        target_channel="github"
+        if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
+        else "validator",
         target_branch=target_branch,
         target_install_kind=target_install_kind,
     )
@@ -1057,14 +1390,14 @@ def apply_remote_update(
 
     remote_manifest = (
         fetch_github_update_manifest(source, timeout_sec=timeout_sec)
-        if isinstance(source, GitHubUpdateSource)
+        if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
         else fetch_remote_update_manifest(
             base_url=source.base_url,
             install_kind=local_state.install_kind,
             timeout_sec=timeout_sec,
         )
     )
-    if not isinstance(source, GitHubUpdateSource):
+    if not isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource)):
         validate_update_manifest(remote_manifest, require_archive_hash=True)
         target_install_kind = _remote_install_kind(remote_manifest, default=local_state.install_kind)
         can_apply, apply_reason = _can_apply_update(
@@ -1081,16 +1414,26 @@ def apply_remote_update(
             "updated": False,
             "status": "up_to_date",
             "message": "Local CAI checkout is already up to date.",
-            "channel": "github" if isinstance(source, GitHubUpdateSource) else "validator",
-            "provider": "github" if isinstance(source, GitHubUpdateSource) else "validator",
+            "channel": "github"
+            if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
+            else "validator",
+            "provider": "github"
+            if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
+            else "validator",
             "sourceUrl": (
-                f"{source.repo_url.removesuffix('.git')}/tree/{source.branch}"
-                if isinstance(source, GitHubUpdateSource)
+                _github_source_display_url(source)
+                if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
                 else source.base_url
             ),
-            "repository": source.repository if isinstance(source, GitHubUpdateSource) else None,
-            "targetBranch": source.branch if isinstance(source, GitHubUpdateSource) else remote_manifest.get("gitBranch"),
-            "baseUrl": None if isinstance(source, GitHubUpdateSource) else source.base_url,
+            "repository": source.repository
+            if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
+            else None,
+            "targetBranch": source.branch
+            if isinstance(source, GitHubUpdateSource)
+            else remote_manifest.get("gitBranch"),
+            "baseUrl": None
+            if isinstance(source, (GitHubUpdateSource, GitHubPortableUpdateSource))
+            else source.base_url,
             "installKind": local_state.install_kind,
             "localVersion": local_state.version or __version__,
             "localGitCommit": local_state.git_commit,
@@ -1112,6 +1455,9 @@ def apply_remote_update(
         _write_update_status(root, result)
         return result
 
+    if isinstance(source, GitHubPortableUpdateSource):
+        validate_update_manifest(remote_manifest, require_archive_hash=True)
+
     download_dir = local_state.repo_root / ".cai-update-cache"
     download_dir.mkdir(parents=True, exist_ok=True)
     archive_path = _download_update_archive(remote_manifest, download_dir, timeout_sec=timeout_sec)
@@ -1125,12 +1471,16 @@ def apply_remote_update(
         "checked": True,
         "updated": True,
         "status": "updated",
-        "channel": "validator",
-        "provider": "validator",
-        "sourceUrl": source.base_url,
-        "repository": None,
+        "channel": "github" if isinstance(source, GitHubPortableUpdateSource) else "validator",
+        "provider": "github" if isinstance(source, GitHubPortableUpdateSource) else "validator",
+        "sourceUrl": (
+            _github_source_display_url(source)
+            if isinstance(source, GitHubPortableUpdateSource)
+            else source.base_url
+        ),
+        "repository": source.repository if isinstance(source, GitHubPortableUpdateSource) else None,
         "targetBranch": remote_manifest.get("gitBranch"),
-        "baseUrl": source.base_url,
+        "baseUrl": None if isinstance(source, GitHubPortableUpdateSource) else source.base_url,
         "installKind": local_state.install_kind,
         "localVersion": local_state.version or __version__,
         "localBuildId": local_state.build_id,
@@ -1712,6 +2062,11 @@ def build_local_update_summary(repo_root: Path | None = None) -> dict[str, Any]:
         repository = repository or source.repository
         target_branch = target_branch or source.branch
         source_url = source_url or f"{source.repo_url.removesuffix('.git')}/tree/{source.branch}"
+    elif isinstance(source, GitHubPortableUpdateSource):
+        source_kind = "github"
+        repository = repository or source.repository
+        target_branch = target_branch or source.release_tag
+        source_url = source_url or _github_source_display_url(source)
     elif isinstance(source, ValidatorUpdateSource):
         source_kind = "validator"
         base_url = base_url or source.base_url
@@ -3324,10 +3679,8 @@ def _can_apply_update(
     if local_state.install_kind == "portable":
         if not portable_install_looks_valid(local_state.repo_root):
             return False, "Local CAI install is not a portable runtime."
-        if target_channel == "github":
-            return False, "Portable CAI installs can only update from a validator package."
         if normalized_target_install_kind and normalized_target_install_kind != "portable":
-            return False, "Validator update package kind does not match the local portable install."
+            return False, "Update package kind does not match the local portable install."
         return True, "ok"
 
     if local_state.install_kind != "source" or not source_repo_looks_valid(local_state.repo_root):
@@ -4161,6 +4514,14 @@ def _github_auth_header() -> dict[str, str]:
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def _github_source_display_url(source: GitHubUpdateSource | GitHubPortableUpdateSource) -> str:
+    repo_url = source.repo_url.removesuffix(".git")
+    if isinstance(source, GitHubPortableUpdateSource):
+        tag = quote(source.release_tag, safe="")
+        return f"{repo_url}/releases/{tag}"
+    return f"{repo_url}/tree/{source.branch}"
 
 
 def _normalize_github_repository(value: str) -> str | None:
