@@ -42,6 +42,8 @@ wallet, update, settlement, and distributed-compute work safer to change.
   is isolated in `cai_owned_transport_storage.py`.
 - CAI-owned transport peer URL cleanup, prioritization, and route-class
   detection is isolated in `cai_owned_transport_peer_urls.py`.
+- CAI-owned transport data-plane route readiness and route-health quorum checks
+  are isolated in `cai_owned_transport_route_readiness.py`.
 
 ## Next checkpoints
 
