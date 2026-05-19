@@ -40,6 +40,8 @@ wallet, update, settlement, and distributed-compute work safer to change.
   returning an empty update state.
 - CAI-owned transport session storage, payload storage, and replay-cache logic
   is isolated in `cai_owned_transport_storage.py`.
+- CAI-owned transport peer URL cleanup, prioritization, and route-class
+  detection is isolated in `cai_owned_transport_peer_urls.py`.
 
 ## Next checkpoints
 

@@ -37,6 +37,12 @@ from .route_health import (
     list_route_health_records,
     llama_cpp_compute_cell_profile_for_path,
 )
+from .cai_owned_transport_peer_urls import (
+    cai_owned_transport_peer_url_priority as _cai_owned_transport_peer_url_priority,
+    cai_owned_transport_peer_url_route_class as _cai_owned_transport_peer_url_route_class,
+    clean_peer_cai_urls as _clean_peer_cai_urls,
+    prioritized_cai_owned_transport_peer_urls as _prioritized_cai_owned_transport_peer_urls,
+)
 from .cai_owned_transport_storage import (
     CaiOwnedTransportSessionRecord,
     cai_owned_transport_batch_output_payload_path,
@@ -8277,84 +8283,6 @@ def _clean_node_ids(node_ids: Sequence[str]) -> list[str]:
         seen.add(clean)
         cleaned.append(clean)
     return cleaned
-
-
-def _clean_peer_cai_urls(peer_cai_urls: Sequence[str]) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
-    for raw_url in peer_cai_urls:
-        url = str(raw_url or "").strip().rstrip("/")
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        urls.append(url)
-    return urls
-
-
-def _prioritized_cai_owned_transport_peer_urls(
-    peer_cai_urls: Sequence[str],
-) -> list[str]:
-    urls = _clean_peer_cai_urls(peer_cai_urls)
-    indexed_urls = list(enumerate(urls))
-    indexed_urls.sort(
-        key=lambda item: (
-            _cai_owned_transport_peer_url_priority(item[1]),
-            item[0],
-        )
-    )
-    return [url for _index, url in indexed_urls]
-
-
-def _cai_owned_transport_peer_url_priority(peer_cai_url: str) -> int:
-    raw = str(peer_cai_url or "").strip()
-    if not raw.startswith(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX):
-        return 0
-    rest = raw[len(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX) :].strip()
-    try:
-        parsed = urlsplit(rest)
-    except Exception:
-        return 50
-    query = parse_qs(parsed.query)
-    relay_role = str(
-        (
-            query.get("relayRole")
-            or query.get("relay_role")
-            or query.get("transitRole")
-            or query.get("transit_role")
-            or [""]
-        )[0]
-    ).strip().lower()
-    if relay_role in {"ordinary", "participant", "peer", "worker", "transit"}:
-        return 10
-    if relay_role in {"bootstrap", "validator", "vps", "primary"}:
-        return 30
-    return 20
-
-
-def _cai_owned_transport_peer_url_route_class(peer_cai_url: str) -> str:
-    raw = str(peer_cai_url or "").strip()
-    if not raw.startswith(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX):
-        return "direct"
-    rest = raw[len(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX) :].strip()
-    try:
-        parsed = urlsplit(rest)
-    except Exception:
-        return "overlay_invalid"
-    query = parse_qs(parsed.query)
-    relay_role = str(
-        (
-            query.get("relayRole")
-            or query.get("relay_role")
-            or query.get("transitRole")
-            or query.get("transit_role")
-            or [""]
-        )[0]
-    ).strip().lower()
-    if relay_role in {"ordinary", "participant", "peer", "worker", "transit"}:
-        return "overlay_ordinary"
-    if relay_role in {"bootstrap", "validator", "vps", "primary"}:
-        return "overlay_bootstrap"
-    return "overlay_generic"
 
 
 def _parse_cai_owned_transport_overlay_url(value: str) -> tuple[str, str] | None:
