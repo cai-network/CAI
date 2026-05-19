@@ -234,18 +234,37 @@ SPDX-License-Identifier: Apache-2.0
       </button>
     {/if}
     {#if showHome}
-      <select
-        value={language}
-        onchange={(event) =>
-          setLanguage(event.currentTarget.value as Language)}
-        class="max-w-[4.3rem] rounded border border-cai-light-gray/20 bg-cai-dark-gray/80 px-1.5 py-1 text-xs md:text-sm text-white/70 hover:text-cai-yellow focus:border-cai-yellow/60 focus:outline-none transition-colors tracking-wider uppercase cursor-pointer"
+      <div
+        class="hidden lg:flex items-center overflow-hidden rounded border border-cai-light-gray/20 bg-cai-dark-gray/80"
         title={t("nav.language")}
         aria-label={t("nav.language")}
       >
         {#each languageOptions as option}
-          <option value={option.code} title={option.label}>
+          <button
+            type="button"
+            onclick={() => setLanguage(option.code)}
+            class="px-1.5 py-1 text-[0.68rem] font-semibold tracking-wider transition-colors {language ===
+            option.code
+              ? 'bg-cai-yellow/15 text-cai-yellow'
+              : 'text-white/55 hover:text-cai-yellow hover:bg-cai-light-gray/10'}"
+            title={option.label}
+            aria-label={`${t("nav.language")}: ${option.label}`}
+            aria-pressed={language === option.code}
+          >
             {option.shortLabel}
-          </option>
+          </button>
+        {/each}
+      </div>
+      <select
+        value={language}
+        onchange={(event) =>
+          setLanguage(event.currentTarget.value as Language)}
+        class="lg:hidden max-w-[4.3rem] rounded border border-cai-light-gray/20 bg-cai-dark-gray/80 px-1.5 py-1 text-xs text-white/70 hover:text-cai-yellow focus:border-cai-yellow/60 focus:outline-none transition-colors tracking-wider uppercase cursor-pointer"
+        title={t("nav.language")}
+        aria-label={t("nav.language")}
+      >
+        {#each languageOptions as option}
+          <option value={option.code}>{option.shortLabel}</option>
         {/each}
       </select>
       <button

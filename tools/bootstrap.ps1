@@ -8,8 +8,13 @@ param(
 $ScriptPath = Join-Path $PSScriptRoot "bootstrap.py"
 
 if (Get-Command py -ErrorAction SilentlyContinue) {
-    & py -3 $ScriptPath @ForwardArgs
-    exit $LASTEXITCODE
+    foreach ($Version in @("-3.14", "-3.13", "-3")) {
+        & py $Version -c "import sys" *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & py $Version $ScriptPath @ForwardArgs
+            exit $LASTEXITCODE
+        }
+    }
 }
 
 if (Get-Command python -ErrorAction SilentlyContinue) {

@@ -5,12 +5,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="python"
-else
-  echo "Python not found. Install Python 3 and rerun tools/bootstrap.sh" >&2
+PYTHON_BIN=""
+for candidate in python3.14 python3.13 python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    PYTHON_BIN="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "Python not found. Install Python 3.13 or newer and rerun tools/bootstrap.sh" >&2
   exit 1
 fi
 

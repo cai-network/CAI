@@ -7,8 +7,12 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 import venv
 from pathlib import Path
+
+
+MIN_PYTHON = (3, 13)
 
 
 def run(command: list[str], *, cwd: Path | None = None) -> None:
@@ -42,6 +46,19 @@ def ensure_venv(venv_dir: Path) -> Path:
 
 
 def main() -> int:
+    if sys.version_info < MIN_PYTHON:
+        required = ".".join(str(part) for part in MIN_PYTHON)
+        current = ".".join(str(part) for part in sys.version_info[:3])
+        print(
+            f"[bootstrap] Python {required}+ is required, current interpreter is {current}.",
+            file=sys.stderr,
+        )
+        print(
+            "[bootstrap] Install Python 3.13 or newer and rerun this bootstrap command.",
+            file=sys.stderr,
+        )
+        return 2
+
     parser = argparse.ArgumentParser(
         description="Bootstrap the CAI monorepo from a single root.",
     )

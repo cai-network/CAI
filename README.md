@@ -92,6 +92,19 @@ Base model:
 - Python CLI for wallet, validator, settlement, CAI startup, and checks.
 - Portable update, local launch tooling, and release artifact checks.
 
+## Requirements
+
+To clone and run CAI from source, install:
+
+- Git.
+- Python `3.13` or newer.
+- Rust toolchain with `cargo` for the native Python binding.
+- Node.js `22` or newer with `npm` for the web dashboard.
+- Windows: PowerShell 5+ and, if Rust reports a linker error, Microsoft Visual Studio Build Tools with the C++ workload.
+- Linux/macOS: Bash and the standard compiler/build tools for your distribution.
+
+For real model execution, the machine also needs enough disk/RAM/VRAM for the selected GGUF model and a working `llama.cpp` runtime path. CAI can start without a loaded model, but inference requires a model/runtime that fits the device.
+
 ## Quick start
 
 Windows:
@@ -117,6 +130,8 @@ Run CAI runtime:
 ```powershell
 .venv\Scripts\python.exe .\tools\run-cai-main.py
 ```
+
+On Linux/macOS, use `.venv/bin/python` instead of `.venv\Scripts\python.exe` for the same commands.
 
 Join the current network as a local validator:
 
