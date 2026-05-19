@@ -10,7 +10,7 @@ Usage: tools/join-mainnet-validator.sh [options]
 Join the current CAI mainnet as a validator.
 
 Options:
-  --state-url URL              Local CAI state endpoint. Default: http://127.0.0.1:52425/state
+  --state-url URL              Local CAI state endpoint. Default: http://127.0.0.1:52415/state
   --confirm-static-ip          Mark this node as having stable public reachability.
   --skip-validator-set-sync    Do not sync the validator set before enabling validator mode.
   -h, --help                   Show this help.
@@ -24,7 +24,7 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-STATE_URL="${CAI_STATE_URL:-http://127.0.0.1:52425/state}"
+STATE_URL="${CAI_STATE_URL:-http://127.0.0.1:52415/state}"
 CONFIRM_STATIC_IP=0
 SKIP_VALIDATOR_SET_SYNC=0
 

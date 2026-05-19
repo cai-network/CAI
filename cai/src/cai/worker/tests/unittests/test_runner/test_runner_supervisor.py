@@ -52,7 +52,7 @@ async def test_check_runner_emits_error_chunk_for_inflight_text_generation() -> 
 
     bound_instance: BoundInstance = get_bound_mlx_ring_instance(
         instance_id=InstanceId("instance-a"),
-        model_id=ModelId("mlx-community/Llama-3.2-1B-Instruct-4bit"),
+        model_id=ModelId("Qwen/Qwen3-0.6B-GGUF"),
         runner_id=RunnerId("runner-a"),
         node_id=NodeId("node-a"),
     )

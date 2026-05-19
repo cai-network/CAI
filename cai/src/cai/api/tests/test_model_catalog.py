@@ -37,7 +37,6 @@ def test_get_models_filters_catalog_to_llama_cpp() -> None:
     api = _make_api()
     cards = [
         _model_card("Qwen/Qwen3-0.6B-GGUF", InferenceBackend.LlamaCpp),
-        _model_card("mlx-community/Qwen3-0.6B-4bit", InferenceBackend.Mlx),
     ]
 
     with patch("cai.api.main.get_model_cards", AsyncMock(return_value=cards)):

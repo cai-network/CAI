@@ -34,14 +34,6 @@ def test_search_models_prefers_gguf_results() -> None:
                     last_modified="2026-04-23",
                     tags=["gguf", "text-generation"],
                 ),
-                SimpleNamespace(
-                    id="mlx-community/Qwen3-0.6B-4bit",
-                    author="mlx-community",
-                    downloads=200,
-                    likes=20,
-                    last_modified="2026-04-23",
-                    tags=["text-generation"],
-                ),
             ]
         return []
 

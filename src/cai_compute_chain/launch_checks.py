@@ -156,8 +156,8 @@ def _make_info(key: str, detail: str) -> LaunchCheckResult:
 
 def run_alpha_launch_checks(
     *,
-    local_state_url: str = 'http://127.0.0.1:52425/state',
-    local_summary_url: str = 'http://127.0.0.1:52425/v1/cai/summary',
+    local_state_url: str = 'http://127.0.0.1:52415/state',
+    local_summary_url: str = 'http://127.0.0.1:52415/v1/cai/summary',
     remote_state_url: str | None = 'http://192.145.29.212:52415/state',
     remote_summary_url: str | None = 'http://192.145.29.212:52415/v1/cai/summary',
     expected_cluster_nodes: int = 2,

@@ -808,7 +808,7 @@ def main():
         )
 
     if args.offline:
-        logger.info("Running in OFFLINE mode — no internet checks, local models only")
+        logger.info("Running in OFFLINE mode - no internet checks, local models only")
 
     if args.bootstrap_peers:
         logger.info(f"Bootstrap peers: {args.bootstrap_peers}")
@@ -816,14 +816,6 @@ def main():
     if args.no_batch:
         os.environ["CAI_NO_BATCH"] = "1"
         logger.info("Continuous batching disabled (--no-batch)")
-
-    # Set FAST_SYNCH override env var for runner subprocesses
-    if args.fast_synch is True:
-        os.environ["CAI_FAST_SYNCH"] = "true"
-        logger.info("FAST_SYNCH forced ON")
-    elif args.fast_synch is False:
-        os.environ["CAI_FAST_SYNCH"] = "false"
-        logger.info("FAST_SYNCH forced OFF")
 
     try:
         node = anyio.run(Node.create, args)
@@ -853,7 +845,6 @@ class Args(CamelCaseModel):
         os.getenv("CAI_OFFLINE", None) or os.getenv("CAI_OFFLINE", "false")
     ).lower() == "true"
     no_batch: bool = False
-    fast_synch: bool | None = None  # None = auto, True = force on, False = force off
     bootstrap_peers: list[str] = []
     libp2p_port: int
 
@@ -936,21 +927,6 @@ class Args(CamelCaseModel):
             dest="libp2p_port",
             help="Fixed TCP port for libp2p to listen on (0 = OS-assigned).",
         )
-        fast_synch_group = parser.add_mutually_exclusive_group()
-        fast_synch_group.add_argument(
-            "--fast-synch",
-            action="store_true",
-            dest="fast_synch",
-            default=None,
-            help="Force MLX FAST_SYNCH on (for JACCL backend)",
-        )
-        fast_synch_group.add_argument(
-            "--no-fast-synch",
-            action="store_false",
-            dest="fast_synch",
-            help="Force MLX FAST_SYNCH off",
-        )
-
         args = parser.parse_args()
         return cls(**vars(args))  # pyright: ignore[reportAny] - We are intentionally validating here, we can't do it statically
 

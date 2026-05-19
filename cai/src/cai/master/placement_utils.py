@@ -958,7 +958,7 @@ def get_mlx_ring_hosts_by_node(
     node_network: Mapping[NodeId, NodeNetworkInfo],
     node_identities: Mapping[NodeId, NodeIdentity],
 ) -> dict[NodeId, list[Host]]:
-    """Generate per-node host lists for MLX ring backend.
+    """Generate per-node host lists for the ring data-plane backend.
 
     Each node gets a list where:
     - Self position: Host(ip="0.0.0.0", port=ephemeral_port)
@@ -1003,7 +1003,7 @@ def get_mlx_ring_hosts_by_node(
             )
             if target_ip is None:
                 raise ValueError(
-                    "MLX ring backend requires connectivity between neighbouring nodes"
+                    "Ring data-plane backend requires connectivity between neighbouring nodes"
                 )
 
             hosts_for_node.append(Host(ip=target_ip, port=target_port))
@@ -1242,7 +1242,7 @@ def get_mlx_jaccl_coordinators(
     cycle_digraph: Topology,
     node_network: Mapping[NodeId, NodeNetworkInfo],
 ) -> dict[NodeId, str]:
-    """Get the coordinator addresses for MLX JACCL (rank 0 device).
+    """Get the coordinator addresses for the RDMA/JACCL backend.
 
     Select an IP address that each node can reach for the rank 0 node. Returns
     address in format "X.X.X.X:PORT" per node.

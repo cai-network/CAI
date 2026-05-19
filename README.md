@@ -109,13 +109,13 @@ bash ./tools/bootstrap.sh
 Check status:
 
 ```powershell
-python -m cai_compute_chain.cli status
+.venv\Scripts\python.exe -m cai_compute_chain.cli status
 ```
 
 Run CAI runtime:
 
 ```powershell
-python .\tools\run-cai-main.py
+.venv\Scripts\python.exe .\tools\run-cai-main.py
 ```
 
 Join the current network as a local validator:

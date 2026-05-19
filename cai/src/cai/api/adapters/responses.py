@@ -363,7 +363,7 @@ async def responses_request_to_text_generation(
     )
 
     # The responses API often does not provide tool args nested under a "function" field.
-    # Since we follow the chat completions format of tools in the backend (for MLX chat templates)
+    # Since we follow the chat completions format of tools in the backend.
     # we need to normalise to this format.
     normalised_tools: list[dict[str, Any]] | None = None
     if request.tools:

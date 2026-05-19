@@ -17,6 +17,10 @@ def run(command: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(command, cwd=str(cwd) if cwd else None, check=True)
 
 
+def display_command(command: list[str]) -> str:
+    return " ".join(str(part) for part in command)
+
+
 def find_venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         candidate = venv_dir / "Scripts" / "python.exe"
@@ -61,11 +65,17 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     venv_dir = repo_root / args.venv
     dashboard_dir = repo_root / "cai" / "dashboard"
+    runtime_dir = repo_root / "cai"
+    native_bindings_dir = runtime_dir / "rust" / "cai_pyo3_bindings"
 
     venv_python = ensure_venv(venv_dir)
 
     if not args.skip_pip_install:
         run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"])
+        if native_bindings_dir.exists():
+            run([str(venv_python), "-m", "pip", "install", "-e", str(native_bindings_dir)])
+        if runtime_dir.exists():
+            run([str(venv_python), "-m", "pip", "install", "-e", str(runtime_dir)])
         run([str(venv_python), "-m", "pip", "install", "-e", str(repo_root)])
     else:
         print("[bootstrap] skipping editable pip install")
@@ -83,9 +93,10 @@ def main() -> int:
 
     print()
     print("[bootstrap] next steps")
-    print(f"  1. {venv_python} -m cai_compute_chain.cli launch-check")
-    print("  2. python .\\tools\\run-cai-main.py")
-    print("  3. Linux/VPS validator: bash ./tools/join-mainnet-validator.sh")
+    print(f"  1. {venv_python} -m cai_compute_chain.cli status")
+    print(f"  2. {display_command([str(venv_python), str(repo_root / 'tools' / 'run-cai-main.py')])}")
+    print(f"  3. {venv_python} -m cai_compute_chain.cli launch-check")
+    print("  4. Linux/VPS validator: bash ./tools/join-mainnet-validator.sh")
     return 0
 
 

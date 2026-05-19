@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: 2025 cai Technologies Ltd
 # SPDX-FileCopyrightText: 2026 CAI contributors
 # SPDX-License-Identifier: Apache-2.0
-import os
-
 import loguru
 
 try:
@@ -15,7 +13,6 @@ from cai.shared.types.tasks import Task, TaskId
 from cai.shared.types.worker.instances import BoundInstance
 from cai.shared.types.worker.runners import RunnerFailed
 from cai.utils.channels import ClosedResourceError, MpReceiver, MpSender
-from cai.shared.models.model_cards import InferenceBackend
 
 logger: "loguru.Logger" = loguru.logger
 
@@ -34,43 +31,16 @@ def entrypoint(
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         resource.setrlimit(resource.RLIMIT_NOFILE, (min(max(soft, 2048), hard), hard))
 
-    fast_synch_override = os.environ.get("CAI_FAST_SYNCH")
-    if fast_synch_override == "false":
-        os.environ["MLX_METAL_FAST_SYNCH"] = "0"
-    else:
-        os.environ["MLX_METAL_FAST_SYNCH"] = "1"
-
-    logger.info(f"Fast synch flag: {os.environ['MLX_METAL_FAST_SYNCH']}")
-
     # Import main after setting global logger - this lets us just import logger from this module
     try:
         if bound_instance.is_image_model:
-            from cai.worker.runner.image_models.runner import Runner as ImageRunner
+            raise RuntimeError("Image model runner is not available in this CAI build")
+        from cai.worker.runner.llama_cpp.runner import Runner as LlamaCppRunner
 
-            runner = ImageRunner(
-                bound_instance, event_sender, task_receiver, cancel_receiver
-            )
-            runner.main()
-        elif (
-            bound_instance.bound_shard.model_card.inference_backend
-            == InferenceBackend.LlamaCpp
-        ):
-            from cai.worker.runner.llama_cpp.runner import Runner as LlamaCppRunner
-
-            runner = LlamaCppRunner(
-                bound_instance, event_sender, task_receiver, cancel_receiver
-            )
-            runner.main()
-        else:
-            from cai.worker.runner.llm_inference.runner import Runner
-            from cai.worker.engines.mlx.patches import apply_mlx_patches
-
-            apply_mlx_patches()
-
-            runner = Runner(
-                bound_instance, event_sender, task_receiver, cancel_receiver
-            )
-            runner.main()
+        runner = LlamaCppRunner(
+            bound_instance, event_sender, task_receiver, cancel_receiver
+        )
+        runner.main()
 
     except ClosedResourceError:
         logger.warning("Runner communication closed unexpectedly")

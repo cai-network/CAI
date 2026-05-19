@@ -23,14 +23,12 @@ def _card(model_id: str, backend: InferenceBackend) -> ModelCard:
 
 def test_get_model_cards_respects_allowed_inference_backends(monkeypatch) -> None:
     llama_card = _card("Qwen/Qwen3-0.6B-GGUF", InferenceBackend.LlamaCpp)
-    mlx_card = _card("mlx-community/Qwen3-0.6B-4bit", InferenceBackend.Mlx)
 
     monkeypatch.setattr(
         model_cards_module,
         "_card_cache",
         {
             llama_card.model_id: llama_card,
-            mlx_card.model_id: mlx_card,
         },
     )
     monkeypatch.setenv("CAI_ALLOWED_INFERENCE_BACKENDS", "llama_cpp")
@@ -38,6 +36,9 @@ def test_get_model_cards_respects_allowed_inference_backends(monkeypatch) -> Non
     result = asyncio.run(model_cards_module.get_model_cards())
 
     assert [card.model_id for card in result] == [llama_card.model_id]
+
+    monkeypatch.setenv("CAI_ALLOWED_INFERENCE_BACKENDS", "unsupported_backend")
+    assert asyncio.run(model_cards_module.get_model_cards()) == []
 
 
 def test_qwen3_gguf_cards_use_real_runtime_shape_metadata(monkeypatch) -> None:

@@ -5,7 +5,7 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cai"
+name = "cai-network-core"
 version = "0.1.0"
 description = "CAI decentralized AI compute network, wallet, settlement and validator layer"
 readme = "README.md"

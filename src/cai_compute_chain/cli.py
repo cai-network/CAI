@@ -592,17 +592,18 @@ def build_parser() -> argparse.ArgumentParser:
     model_package_create_gguf_parser.add_argument("--source-revision", default="main")
     model_package_create_gguf_parser.add_argument("--family", default="")
     model_package_create_gguf_parser.add_argument("--quantization", default="")
+    launch_check_local_port = CaiNetworkConfig().default_api_port
     launch_check_parser = subparsers.add_parser(
         "launch-check", help="Run alpha launch readiness checks"
     )
     launch_check_parser.add_argument(
         "--local-state-url",
-        default="http://127.0.0.1:52425/state",
+        default=f"http://127.0.0.1:{launch_check_local_port}/state",
         help="Local CAI runtime state URL",
     )
     launch_check_parser.add_argument(
         "--local-summary-url",
-        default="http://127.0.0.1:52425/v1/cai/summary",
+        default=f"http://127.0.0.1:{launch_check_local_port}/v1/cai/summary",
         help="Local CAI summary URL",
     )
     launch_check_parser.add_argument(
@@ -715,7 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
     validator_mode_group.add_argument("--disable", action="store_true")
     validator_mode_parser.add_argument(
         "--state-url",
-        default="http://127.0.0.1:52425/state",
+        default=f"http://127.0.0.1:{launch_check_local_port}/state",
         help="CAI runtime state URL used for validator eligibility checks",
     )
     validator_config_parser = subparsers.add_parser(
@@ -748,7 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validator_ha_parser.add_argument(
         "--state-url",
-        default="http://127.0.0.1:52425/state",
+        default=f"http://127.0.0.1:{launch_check_local_port}/state",
         help="CAI runtime state URL used to resolve the local replica node id",
     )
     subparsers.add_parser(

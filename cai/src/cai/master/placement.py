@@ -904,7 +904,7 @@ def place_instance(
                 f" across candidate cycles"
             )
     if command.sharding == Sharding.Pipeline and command.model_card.model_id == ModelId(
-        "mlx-community/DeepSeek-V3.1-8bit"
+        "deepseek-ai/DeepSeek-V3.1-GGUF"
     ):
         raise ValueError(
             "Pipeline parallelism is not supported for DeepSeek V3.1 (8-bit)"

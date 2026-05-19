@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from cai.download.download_utils import resolve_existing_model
 from cai.shared.models.model_cards import (
     InferenceBackend,
@@ -47,23 +49,16 @@ def _create_local_gguf_dir(root: Path) -> Path:
     return model_dir
 
 
-async def test_load_from_local_directory_builds_custom_model_card(
+async def test_load_from_local_directory_rejects_non_gguf_model(
     tmp_path: Path,
 ) -> None:
     model_dir = _create_local_model_dir(tmp_path)
 
-    card = await ModelCard.load_from_local_directory(
-        ModelId("local/my-custom-model"),
-        model_dir,
-    )
-
-    assert card.model_id == "local/my-custom-model"
-    assert card.is_custom is True
-    assert card.n_layers == 4
-    assert card.hidden_size == 128
-    assert card.supports_tensor is True
-    assert card.storage_size.in_bytes >= len(b"weights")
-    assert card.inference_backend == InferenceBackend.Mlx
+    with pytest.raises(ValueError, match="Only GGUF"):
+        await ModelCard.load_from_local_directory(
+            ModelId("local/my-custom-model"),
+            model_dir,
+        )
 
 
 async def test_load_from_local_directory_builds_llama_cpp_card_for_gguf_dir(
