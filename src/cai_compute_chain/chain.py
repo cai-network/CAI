@@ -1200,6 +1200,16 @@ def ensure_chain_genesis(
                 save_chain_blocks([genesis_block], policy)
             return 0
 
+    existing_genesis = existing_blocks[0]
+    if existing_genesis.block_hash != genesis_block.block_hash:
+        raise ValueError(
+            "Local chain genesis_hash "
+            f"{existing_genesis.block_hash} does not match expected "
+            f"{genesis_block.block_hash} for network "
+            f"{active_money_policy.chain_network.value}. Reset or migrate the "
+            "local chain state before recording new blocks."
+        )
+
     existing_tx_ids = chain_transaction_ids(policy)
     missing_transactions = [
         tx
