@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,13 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from .local_json_store import atomic_write_json_array_file, read_json_array_file
-from .model import MoneyPolicy, ValidatorLifecycleState, WalletPolicy
+from .model import (
+    MoneyPolicy,
+    ValidatorLifecycleState,
+    WalletPolicy,
+    default_api_port,
+    default_bootstrap_peers,
+)
 from .peer_payload import (
     add_peer_payload_metadata,
     peer_payload_signatures_required,
@@ -965,6 +972,17 @@ def discover_peer_cai_urls(
     )
     normalized_path = "/" + str(endpoint_path or "").lstrip("/")
     urls: list[str] = []
+    local_identity_urls: set[str] = set()
+    local_identity = (
+        identities.get(resolved_local_node_id) if resolved_local_node_id else None
+    )
+    if isinstance(local_identity, dict):
+        local_identity_urls.update(
+            candidate_identity_http_urls(
+                local_identity,
+                endpoint_path=normalized_path,
+            )
+        )
     for node_id, identity in identities.items():
         if node_id == resolved_local_node_id:
             continue
@@ -976,6 +994,10 @@ def discover_peer_cai_urls(
                 endpoint_path=normalized_path,
             )
         )
+    for url in _bootstrap_peer_cai_urls(endpoint_path=normalized_path):
+        if url in local_identity_urls:
+            continue
+        urls.append(url)
     seen: set[str] = set()
     deduped: list[str] = []
     for url in urls:
@@ -984,6 +1006,37 @@ def discover_peer_cai_urls(
         seen.add(url)
         deduped.append(url)
     return deduped
+
+
+def _bootstrap_peer_cai_urls(*, endpoint_path: str) -> list[str]:
+    normalized_path = "/" + str(endpoint_path or "").lstrip("/")
+    urls: list[str] = []
+    for peer in default_bootstrap_peers():
+        base_url = _api_base_url_from_multiaddr(peer, default_api_port())
+        if not base_url:
+            continue
+        urls.append(base_url.rstrip("/") + normalized_path)
+    return urls
+
+
+def _api_base_url_from_multiaddr(peer: str, api_port: int) -> str | None:
+    normalized = str(peer or "").strip()
+    if not normalized:
+        return None
+
+    ip4_match = re.match(r"^/ip4/([^/]+)", normalized)
+    if ip4_match:
+        return f"http://{ip4_match.group(1)}:{int(api_port)}"
+
+    ip6_match = re.match(r"^/ip6/([^/]+)", normalized)
+    if ip6_match:
+        return f"http://[{ip6_match.group(1)}]:{int(api_port)}"
+
+    dns_match = re.match(r"^/dns(?:4|6)?/([^/]+)", normalized)
+    if dns_match:
+        return f"http://{dns_match.group(1)}:{int(api_port)}"
+
+    return None
 
 
 def _normalize_host(value: object) -> str:
