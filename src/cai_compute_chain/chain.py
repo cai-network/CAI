@@ -1595,7 +1595,8 @@ def validate_chain_blocks(
         key=lambda item: (int(item.height), item.created_at, item.block_hash),
     )
     previous_block: ChainBlock | None = None
-    expected_chain_id = str(ordered_blocks[0].chain_id or _default_chain_id())
+    expected_chain_id = _money_policy_for_wallet_policy(policy).chain_network.value
+    expected_policy_genesis_hash = expected_genesis_hash(policy=policy)
     for index, block in enumerate(ordered_blocks):
         height = int(block.height)
         if not str(block.chain_id).strip():
@@ -1618,6 +1619,11 @@ def validate_chain_blocks(
                 errors.append(f"block[{index}] must start at height 0")
             if block.previous_hash != GENESIS_PREVIOUS_HASH:
                 errors.append(f"block[{index}] has invalid genesis previous_hash")
+            if block.block_hash != expected_policy_genesis_hash:
+                errors.append(
+                    f"block[{index}] genesis_hash {block.block_hash} does not "
+                    f"match expected {expected_policy_genesis_hash}"
+                )
         elif previous_block is not None:
             expected_height = int(previous_block.height) + 1
             if height != expected_height:
@@ -2057,6 +2063,14 @@ def chain_summary(policy: WalletPolicy | None = None) -> dict[str, Any]:
     non_zero_balance_count = sum(
         1 for balance in balances.values() if int(balance) != 0
     )
+    genesis_block = blocks[0] if blocks else None
+    actual_genesis_hash = genesis_block.block_hash if genesis_block is not None else None
+    expected_policy_genesis_hash = expected_genesis_hash(money_policy=money_policy)
+    genesis_matches_policy = (
+        actual_genesis_hash == expected_policy_genesis_hash
+        if actual_genesis_hash
+        else False
+    )
     return {
         "network": money_policy.chain_network.value,
         "chainId": money_policy.chain_network.value,
@@ -2074,6 +2088,9 @@ def chain_summary(policy: WalletPolicy | None = None) -> dict[str, Any]:
         "latestSnapshotStateRoot": index_payload.get("latestSnapshotStateRoot"),
         "blockCount": len(blocks),
         "transactionCount": transaction_count,
+        "genesisHash": actual_genesis_hash,
+        "expectedGenesisHash": expected_policy_genesis_hash,
+        "genesisMatchesPolicy": genesis_matches_policy,
         "tipHeight": tip_block.height if tip_block is not None else None,
         "tipHash": tip_block.block_hash if tip_block is not None else None,
         "tipCreatedAt": tip_block.created_at if tip_block is not None else None,

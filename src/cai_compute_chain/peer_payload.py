@@ -44,11 +44,12 @@ def add_peer_payload_metadata(
     policy: WalletPolicy | object | None = None,
 ) -> dict[str, Any]:
     chain_id = policy_chain_id(policy)
+    payload_genesis_hash = _payload_genesis_hash(payload)
     return {
         **payload,
         "network": chain_id,
         "chain_id": chain_id,
-        "genesis_hash": policy_genesis_hash(policy),
+        "genesis_hash": payload_genesis_hash or policy_genesis_hash(policy),
         "schema_version": PEER_PAYLOAD_SCHEMA_VERSION,
     }
 
@@ -105,12 +106,18 @@ def validate_peer_payload_network(
             f"Refusing {payload_name} payload for network '{incoming_network}' "
             f"on '{local_network}'."
         )
-    payload_genesis_hash = _payload_genesis_hash(payload)
-    if not payload_genesis_hash:
+    payload_genesis_hashes = _payload_genesis_hashes(payload)
+    if not payload_genesis_hashes:
         raise ValueError(
             f"Refusing {payload_name} payload without genesis_hash for "
             f"network '{local_network}'."
         )
+    if len(payload_genesis_hashes) > 1:
+        raise ValueError(
+            f"Refusing {payload_name} payload with conflicting genesis_hash values: "
+            f"{', '.join(sorted(payload_genesis_hashes))}."
+        )
+    payload_genesis_hash = next(iter(payload_genesis_hashes))
     local_genesis_hash = policy_genesis_hash(policy)
     if payload_genesis_hash != local_genesis_hash:
         raise ValueError(
@@ -310,3 +317,29 @@ def _payload_genesis_hash(payload: dict[str, Any]) -> str:
         if isinstance(first_block, dict):
             return str(first_block.get("block_hash") or "").strip().lower()
     return ""
+
+
+def _payload_genesis_hashes(payload: dict[str, Any]) -> set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    values: set[str] = set()
+    direct = _metadata_value(
+        payload,
+        "genesis_hash",
+        "genesisHash",
+        "chain_genesis_hash",
+        "chainGenesisHash",
+    ).lower()
+    if direct:
+        values.add(direct)
+    nested_chain = payload.get("chain")
+    if isinstance(nested_chain, dict):
+        values.update(_payload_genesis_hashes(nested_chain))
+    raw_blocks = payload.get("blocks")
+    if isinstance(raw_blocks, list) and raw_blocks:
+        first_block = raw_blocks[0]
+        if isinstance(first_block, dict):
+            block_hash = str(first_block.get("block_hash") or "").strip().lower()
+            if block_hash:
+                values.add(block_hash)
+    return values
