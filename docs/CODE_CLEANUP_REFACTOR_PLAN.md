@@ -42,6 +42,8 @@ wallet, update, settlement, and distributed-compute work safer to change.
   is isolated in `cai_owned_transport_storage.py`.
 - CAI-owned transport protocol constants and shared wire-level names are
   isolated in `cai_owned_transport_protocol.py`.
+- CAI-owned transport shared helper functions for node IDs, chain IDs, and
+  timestamps are isolated in `cai_owned_transport_common.py`.
 - CAI-owned transport peer URL cleanup, prioritization, and route-class
   detection is isolated in `cai_owned_transport_peer_urls.py`.
 - CAI-owned transport data-plane route readiness and route-health quorum checks

@@ -23,7 +23,6 @@ from .gguf_shard_policy import (
     gguf_shard_compatibility,
 )
 from .model import (
-    MoneyPolicy,
     NetworkModelPolicy,
     WalletPolicy,
     is_private_curated_model_id,
@@ -42,6 +41,11 @@ from .cai_owned_transport_peer_urls import (
     cai_owned_transport_peer_url_route_class as _cai_owned_transport_peer_url_route_class,
     clean_peer_cai_urls as _clean_peer_cai_urls,
     prioritized_cai_owned_transport_peer_urls as _prioritized_cai_owned_transport_peer_urls,
+)
+from .cai_owned_transport_common import (
+    cai_owned_transport_chain_id as _cai_owned_transport_chain_id,
+    clean_node_ids as _clean_node_ids,
+    parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
 )
 from .cai_owned_transport_protocol import (
     CAI_OWNED_LLM_HANDOFF_ABI,
@@ -7633,18 +7637,6 @@ def _clean_sink_node_ids(source_node_id: str, sink_node_ids: Sequence[str]) -> l
     return sinks
 
 
-def _clean_node_ids(node_ids: Sequence[str]) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for node_id in node_ids:
-        clean = str(node_id or "").strip()
-        if not clean or clean in seen:
-            continue
-        seen.add(clean)
-        cleaned.append(clean)
-    return cleaned
-
-
 def _parse_cai_owned_transport_overlay_url(value: str) -> tuple[str, str] | None:
     raw = str(value or "").strip()
     if not raw.startswith(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX):
@@ -8423,18 +8415,6 @@ def _require_cai_owned_transport_batch_completion_owner(
         raise ValueError("CAI-owned transport batch lease has expired.")
 
 
-def _cai_owned_transport_chain_id(
-    policy: WalletPolicy | None = None,
-    chain_id: str | None = None,
-) -> str:
-    clean_chain_id = str(chain_id or "").strip().lower()
-    if clean_chain_id:
-        return clean_chain_id
-    if policy is not None:
-        return policy.chain_network.value
-    return MoneyPolicy().chain_network.value
-
-
 def _cai_owned_transport_payload_chain_id(payload: dict[str, Any]) -> str | None:
     chain_id = str(
         payload.get("chainId") or payload.get("chain_id") or ""
@@ -8845,18 +8825,6 @@ def _clear_cai_owned_transport_batch_runtime_claim(batch: dict[str, Any]) -> Non
         "claimedByNodeId",
     ):
         batch.pop(key, None)
-
-
-def _parse_cai_owned_transport_datetime(value: object) -> datetime | None:
-    if value is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _max_receipt_count(

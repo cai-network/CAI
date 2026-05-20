@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .cai_owned_transport_common import clean_node_ids as _clean_node_ids
 from .cai_owned_transport_peer_urls import (
     cai_owned_transport_peer_url_route_class,
     prioritized_cai_owned_transport_peer_urls,
@@ -626,18 +627,6 @@ def _clean_sink_node_ids(source_node_id: str, sink_node_ids: Sequence[str]) -> l
         seen.add(clean)
         sinks.append(clean)
     return sinks
-
-
-def _clean_node_ids(node_ids: Sequence[str]) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for node_id in node_ids:
-        clean = str(node_id or "").strip()
-        if not clean or clean in seen:
-            continue
-        seen.add(clean)
-        cleaned.append(clean)
-    return cleaned
 
 
 def _optional_int(value: object) -> int | None:

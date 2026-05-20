@@ -12,6 +12,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .cai_owned_transport_common import (
+    cai_owned_transport_chain_id as _cai_owned_transport_chain_id,
+    clean_node_ids as _clean_node_ids,
+    parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
+)
 from .cai_owned_transport_protocol import (
     CAI_OWNED_TRANSPORT_PAYLOAD_RETENTION_SECONDS,
     CAI_OWNED_TRANSPORT_PROTOCOL,
@@ -20,7 +25,7 @@ from .cai_owned_transport_protocol import (
     EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
 )
 from .local_json_store import atomic_write_json_array_file, read_json_array_file
-from .model import MoneyPolicy, WalletPolicy
+from .model import WalletPolicy
 from .peer_payload import peer_payload_signing_body
 from .wallet import data_root
 
@@ -453,30 +458,6 @@ def _read_json_array_file(path: Path, *, heal_corrupt: bool = False) -> list[Any
     return read_json_array_file(path, heal_corrupt=heal_corrupt)
 
 
-def _clean_node_ids(node_ids: Sequence[str]) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for node_id in node_ids:
-        clean = str(node_id or "").strip()
-        if not clean or clean in seen:
-            continue
-        seen.add(clean)
-        cleaned.append(clean)
-    return cleaned
-
-
-def _cai_owned_transport_chain_id(
-    policy: WalletPolicy | None = None,
-    chain_id: str | None = None,
-) -> str:
-    clean_chain_id = str(chain_id or "").strip().lower()
-    if clean_chain_id:
-        return clean_chain_id
-    if policy is not None:
-        return policy.chain_network.value
-    return MoneyPolicy().chain_network.value
-
-
 def _is_safe_transport_file_id(value: object, *, prefix: str) -> bool:
     clean = str(value or "").strip()
     return (
@@ -506,18 +487,6 @@ def _delete_cai_owned_transport_payload_session_dir(path: Path, root: Path) -> N
             "Refusing to delete CAI-owned transport payload path outside root."
         ) from exc
     shutil.rmtree(resolved_path)
-
-
-def _parse_cai_owned_transport_datetime(value: object) -> datetime | None:
-    if value is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _cai_owned_transport_replay_record_expired(

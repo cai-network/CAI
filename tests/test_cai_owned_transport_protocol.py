@@ -5,9 +5,11 @@ from __future__ import annotations
 import unittest
 
 from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
+from cai_compute_chain import cai_owned_transport_common as common
 from cai_compute_chain import cai_owned_transport_protocol as protocol
 from cai_compute_chain import cai_owned_transport_storage as storage
 from cai_compute_chain import decentralized_compute
+from cai_compute_chain.model import ChainNetwork, WalletPolicy
 
 
 class CaiOwnedTransportProtocolTests(unittest.TestCase):
@@ -28,6 +30,26 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             decentralized_compute.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
             protocol.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
         )
+
+    def test_common_helpers_match_legacy_transport_expectations(self) -> None:
+        self.assertEqual(
+            common.clean_node_ids([" node-a ", "", "node-a", "node-b"]),
+            ["node-a", "node-b"],
+        )
+        self.assertEqual(
+            common.cai_owned_transport_chain_id(chain_id=" MAINNET "),
+            "mainnet",
+        )
+        self.assertEqual(
+            common.cai_owned_transport_chain_id(
+                WalletPolicy(chain_network=ChainNetwork.TESTNET)
+            ),
+            "testnet",
+        )
+
+        parsed = common.parse_cai_owned_transport_datetime("2026-05-20T12:00:00")
+        self.assertIsNotNone(parsed)
+        self.assertIsNotNone(parsed.tzinfo)
 
 
 if __name__ == "__main__":
