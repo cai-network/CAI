@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -12,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -26,6 +27,8 @@ DEFAULT_CHUNK_TARGET_BYTES = 256 * 1024 * 1024
 DEFAULT_MIN_CHUNK_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_CHUNK_BYTES = 512 * 1024 * 1024
 MATERIALIZED_ASSIGNMENT_VALIDATION_READ_BYTES = 8 * 1024 * 1024
+REMOTE_GGUF_LAYOUT_INITIAL_READ_BYTES = 4 * 1024 * 1024
+REMOTE_GGUF_LAYOUT_MAX_READ_BYTES = 128 * 1024 * 1024
 FSCTL_SET_SPARSE = 0x000900C4
 GGUF_MAGIC = b"GGUF"
 GGUF_DEFAULT_ALIGNMENT = 32
@@ -42,6 +45,18 @@ GGUF_METADATA_TYPE_ARRAY = 9
 GGUF_METADATA_TYPE_UINT64 = 10
 GGUF_METADATA_TYPE_INT64 = 11
 GGUF_METADATA_TYPE_FLOAT64 = 12
+HF_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS = (
+    "cai-model-package-manifest.json",
+    "cai_model_package_manifest.json",
+    "model-package-manifest.json",
+    "model_package_manifest.json",
+    "model-package.json",
+    "manifest.cai.json",
+    ".cai/model-package-manifest.json",
+    ".cai/model_package_manifest.json",
+    ".cai/model-package.json",
+    ".cai/manifest.json",
+)
 
 
 class ChunkSizePolicy(StrEnum):
@@ -1435,37 +1450,49 @@ def _maybe_extract_gguf_tensor_layout(
         return None
     try:
         with path.open("rb") as handle:
-            if _read_exact(handle, 4) != GGUF_MAGIC:
-                return None
-            version = _read_u32_le(handle)
-            if int(version) not in {2, 3}:
-                return None
-            tensor_count = _read_u64_le(handle)
-            kv_count = _read_u64_le(handle)
-            alignment = GGUF_DEFAULT_ALIGNMENT
-            for _ in range(int(kv_count)):
-                key = _read_gguf_string(handle)
-                value_type = _read_u32_le(handle)
-                value = _read_gguf_metadata_value(handle, int(value_type))
-                if (
-                    key == "general.alignment"
-                    and isinstance(value, int)
-                    and int(value) > 0
-                ):
-                    alignment = int(value)
-            tensor_entries: list[tuple[str, int]] = []
-            for _ in range(int(tensor_count)):
-                name = _read_gguf_string(handle)
-                n_dimensions = _read_u32_le(handle)
-                for _ in range(int(n_dimensions)):
-                    _read_u64_le(handle)
-                _read_u32_le(handle)  # ggml type
-                relative_offset = _read_u64_le(handle)
-                tensor_entries.append((name, int(relative_offset)))
-            data_offset = _align_offset(int(handle.tell()), int(alignment))
+            return _read_gguf_tensor_layout_from_handle(
+                handle,
+                file_size=file_size,
+                total_layers=total_layers,
+            )
     except (OSError, ValueError, struct.error):
         return None
 
+
+def _read_gguf_tensor_layout_from_handle(
+    handle,
+    *,
+    file_size: int,
+    total_layers: int,
+) -> GgufTensorLayout | None:
+    if _read_exact(handle, 4) != GGUF_MAGIC:
+        return None
+    version = _read_u32_le(handle)
+    if int(version) not in {2, 3}:
+        return None
+    tensor_count = _read_u64_le(handle)
+    kv_count = _read_u64_le(handle)
+    alignment = GGUF_DEFAULT_ALIGNMENT
+    for _ in range(int(kv_count)):
+        key = _read_gguf_string(handle)
+        value_type = _read_u32_le(handle)
+        value = _read_gguf_metadata_value(handle, int(value_type))
+        if (
+            key == "general.alignment"
+            and isinstance(value, int)
+            and int(value) > 0
+        ):
+            alignment = int(value)
+    tensor_entries: list[tuple[str, int]] = []
+    for _ in range(int(tensor_count)):
+        name = _read_gguf_string(handle)
+        n_dimensions = _read_u32_le(handle)
+        for _ in range(int(n_dimensions)):
+            _read_u64_le(handle)
+        _read_u32_le(handle)  # ggml type
+        relative_offset = _read_u64_le(handle)
+        tensor_entries.append((name, int(relative_offset)))
+    data_offset = _align_offset(int(handle.tell()), int(alignment))
     if data_offset < 0 or data_offset > file_size:
         return None
     ordered_entries = sorted(tensor_entries, key=lambda item: int(item[1]))
@@ -4287,6 +4314,577 @@ def _huggingface_resolve_url(
     return f"https://huggingface.co/{repo_segment}/resolve/{revision_segment}/{path_segment}"
 
 
+def _hf_request_headers() -> dict[str, str]:
+    headers = {"User-Agent": "CAI-Compute-Chain/1.0"}
+    token = (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or ""
+    ).strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _read_json_url(url: str, *, timeout_sec: int = 15) -> dict[str, Any]:
+    request = Request(url, headers=_hf_request_headers())
+    with urlopen(request, timeout=timeout_sec) as response:
+        payload = response.read()
+    parsed = json.loads(payload.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object from {url}.")
+    return parsed
+
+
+def build_hf_gguf_model_package_manifest(
+    *,
+    model_id: str,
+    version: str,
+    preferred_filename: str | None = None,
+    catalog_id: str | None = None,
+    source_revision: str | None = "main",
+    total_layers: int | None = None,
+    backend: str = "llama_cpp",
+    package_kind: str = ModelPackageKind.PUBLIC_SHARED,
+    chunk_size_policy: str = ChunkSizePolicy.ADAPTIVE,
+    min_chunk_bytes: int = DEFAULT_MIN_CHUNK_BYTES,
+    max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES,
+    target_chunk_count: int | None = None,
+    family: str = "",
+    quantization: str = "",
+    timeout_sec: int = 30,
+) -> ModelPackageManifest:
+    info = _fetch_hf_model_info(
+        model_id,
+        source_revision=source_revision,
+        timeout_sec=timeout_sec,
+    )
+    resolved_source_revision = str(info.get("sha") or source_revision or "main").strip() or "main"
+    artifact_filename, artifact_size, artifact_sha = _select_hf_gguf_artifact_info(
+        info,
+        preferred_filename=preferred_filename,
+    )
+    gguf_metadata = info.get("gguf") if isinstance(info.get("gguf"), Mapping) else {}
+    resolved_family = str(family or gguf_metadata.get("architecture", "") or "").strip()
+    if not resolved_family:
+        resolved_family = _derive_family_from_model_filename(artifact_filename)
+    resolved_total_layers = int(total_layers or 0)
+    if resolved_total_layers <= 0:
+        resolved_total_layers = _infer_total_layers_from_hf_gguf_metadata(
+            gguf_metadata,
+            resolved_family,
+        )
+    if resolved_total_layers <= 0:
+        resolved_total_layers = _infer_total_layers_from_model_identity(
+            model_id=model_id,
+            architecture=resolved_family,
+            filename=artifact_filename,
+        )
+    if resolved_total_layers <= 0:
+        raise ValueError(
+            "total_layers must be positive or discoverable from Hugging Face GGUF metadata."
+        )
+
+    artifact = SourceArtifact(
+        artifact_id="gguf-main",
+        relative_path=artifact_filename,
+        size_bytes=artifact_size,
+        sha256_hex=artifact_sha,
+        media_type="application/gguf",
+        source_repo_id=model_id,
+        source_revision=resolved_source_revision,
+    )
+    layout = _read_remote_gguf_tensor_layout(
+        repo_id=model_id,
+        revision=resolved_source_revision,
+        relative_path=artifact.relative_path,
+        artifact_size=artifact.size_bytes,
+        total_layers=resolved_total_layers,
+        timeout_sec=timeout_sec,
+    )
+    preferred_chunk_size = recommended_chunk_size_bytes(
+        artifact.size_bytes,
+        chunk_size_policy,
+        min_chunk_bytes=min_chunk_bytes,
+        max_chunk_bytes=max_chunk_bytes,
+        target_chunk_count=target_chunk_count,
+    )
+    chunks = _build_remote_gguf_weight_chunks_for_artifact(
+        artifact,
+        layout,
+        repo_id=model_id,
+        revision=resolved_source_revision,
+        preferred_chunk_size=preferred_chunk_size,
+        timeout_sec=timeout_sec,
+    )
+    if not chunks:
+        raise ValueError(
+            f"Could not build layer-aware GGUF chunks from Hugging Face model {model_id}."
+        )
+    shard_compatibility = gguf_shard_compatibility(
+        model_id=model_id,
+        gguf_architecture=resolved_family,
+        family=resolved_family,
+        filename=artifact.relative_path,
+        allow_full_model_local=str(package_kind) == str(ModelPackageKind.PUBLIC_SHARED),
+    )
+    manifest = ModelPackageManifest(
+        catalog_id=(catalog_id or str(model_id).replace("/", "--")),
+        model_id=model_id,
+        version=version,
+        backend=backend,
+        package_kind=package_kind,
+        chunk_size_policy=chunk_size_policy,
+        total_size_bytes=artifact.size_bytes,
+        source_repo_id=model_id,
+        source_revision=resolved_source_revision,
+        preferred_filename=artifact.relative_path,
+        family=resolved_family,
+        quantization=quantization,
+        files=[artifact],
+        chunks=chunks,
+        metadata={
+            "builder": "cai_compute_chain:hf_range",
+            "chunk_target_bytes": preferred_chunk_size,
+            "chunk_count": len(chunks),
+            "total_layers": resolved_total_layers,
+            **shard_compatibility.to_metadata(),
+        },
+    )
+    validate_model_package_manifest(manifest)
+    return manifest
+
+
+def _fetch_hf_model_info(
+    repo_id: str,
+    *,
+    source_revision: str | None,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    repo_segment = quote(str(repo_id).strip(), safe="/")
+    revision = str(source_revision or "").strip()
+    if revision and revision != "main":
+        revision_segment = quote(revision, safe="")
+        api_url = (
+            f"https://huggingface.co/api/models/{repo_segment}"
+            f"/revision/{revision_segment}?blobs=true"
+        )
+    else:
+        api_url = f"https://huggingface.co/api/models/{repo_segment}?blobs=true"
+    return _read_json_url(api_url, timeout_sec=timeout_sec)
+
+
+def _select_hf_gguf_artifact_info(
+    info: Mapping[str, Any],
+    *,
+    preferred_filename: str | None,
+) -> tuple[str, int, str | None]:
+    gguf_siblings: list[Mapping[str, Any]] = []
+    for sibling in info.get("siblings", []):
+        if not isinstance(sibling, Mapping):
+            continue
+        filename = str(sibling.get("rfilename") or "").replace("\\", "/").strip("/")
+        if filename.lower().endswith(".gguf"):
+            gguf_siblings.append(sibling)
+    if not gguf_siblings:
+        raise FileNotFoundError("No GGUF artifacts found in Hugging Face model repo.")
+
+    requested = str(preferred_filename or "").replace("\\", "/").strip("/")
+    selected = None
+    if requested:
+        selected = next(
+            (
+                item
+                for item in gguf_siblings
+                if str(item.get("rfilename") or "").replace("\\", "/").strip("/")
+                == requested
+            ),
+            None,
+        )
+        if selected is None:
+            raise FileNotFoundError(
+                f"Preferred GGUF artifact not found in Hugging Face model repo: {requested}"
+            )
+    if selected is None:
+        selected = sorted(
+            gguf_siblings,
+            key=lambda item: str(item.get("rfilename") or "").lower(),
+        )[0]
+
+    filename = str(selected.get("rfilename") or "").replace("\\", "/").strip("/")
+    lfs = selected.get("lfs") if isinstance(selected.get("lfs"), Mapping) else {}
+    size = int(selected.get("size") or lfs.get("size") or 0)
+    if size <= 0:
+        raise ValueError(f"GGUF artifact size is unavailable for {filename}.")
+    sha = str(lfs.get("sha256") or "").strip() or None
+    return filename, size, sha
+
+
+def _read_remote_gguf_tensor_layout(
+    *,
+    repo_id: str,
+    revision: str | None,
+    relative_path: str,
+    artifact_size: int,
+    total_layers: int,
+    timeout_sec: int,
+) -> GgufTensorLayout:
+    read_size = min(REMOTE_GGUF_LAYOUT_INITIAL_READ_BYTES, int(artifact_size))
+    max_size = min(REMOTE_GGUF_LAYOUT_MAX_READ_BYTES, int(artifact_size))
+    last_error: Exception | None = None
+    while read_size <= max_size:
+        try:
+            payload = _download_hf_artifact_range(
+                repo_id=repo_id,
+                revision=revision,
+                relative_path=relative_path,
+                offset_bytes=0,
+                size_bytes=read_size,
+                timeout_sec=timeout_sec,
+            )
+            layout = _read_gguf_tensor_layout_from_handle(
+                io.BytesIO(payload),
+                file_size=int(artifact_size),
+                total_layers=int(total_layers),
+            )
+            if layout is not None:
+                return layout
+        except Exception as exc:
+            last_error = exc
+        if read_size >= max_size:
+            break
+        read_size = min(read_size * 2, max_size)
+    raise ValueError(
+        f"Could not read GGUF tensor layout from Hugging Face artifact {relative_path}."
+    ) from last_error
+
+
+def _build_remote_gguf_weight_chunks_for_artifact(
+    artifact: SourceArtifact,
+    layout: GgufTensorLayout,
+    *,
+    repo_id: str,
+    revision: str | None,
+    preferred_chunk_size: int,
+    timeout_sec: int,
+) -> list[ModelChunk]:
+    chunks: list[ModelChunk] = []
+    current_spans: list[GgufTensorSpan] = []
+    current_start = 0
+
+    def flush_current() -> None:
+        nonlocal current_spans, current_start
+        if not current_spans:
+            return
+        chunks.append(
+            _build_remote_model_chunk_from_gguf_spans(
+                artifact,
+                repo_id=repo_id,
+                revision=revision,
+                start_offset=current_start,
+                spans=current_spans,
+                timeout_sec=timeout_sec,
+            )
+        )
+        current_spans = []
+        current_start = chunks[-1].offset_bytes + chunks[-1].size_bytes
+
+    for span in layout.tensors:
+        if not current_spans:
+            current_spans = [span]
+            current_start = 0 if not chunks else span.start_offset
+            continue
+        current_size = max(0, current_spans[-1].end_offset - current_start)
+        current_has_layer = any(item.layer_index is not None for item in current_spans)
+        next_has_layer = span.layer_index is not None
+        if current_has_layer != next_has_layer:
+            flush_current()
+            current_spans = [span]
+            current_start = span.start_offset
+            continue
+        if current_has_layer and next_has_layer and current_size >= preferred_chunk_size:
+            flush_current()
+            current_spans = [span]
+            current_start = span.start_offset
+            continue
+        current_spans.append(span)
+
+    flush_current()
+    return chunks
+
+
+def _build_remote_model_chunk_from_gguf_spans(
+    artifact: SourceArtifact,
+    *,
+    repo_id: str,
+    revision: str | None,
+    start_offset: int,
+    spans: list[GgufTensorSpan],
+    timeout_sec: int,
+) -> ModelChunk:
+    end_offset = max(int(spans[-1].end_offset), int(start_offset))
+    size_bytes = max(1, end_offset - int(start_offset))
+    payload = _download_hf_artifact_range(
+        repo_id=repo_id,
+        revision=revision,
+        relative_path=artifact.relative_path,
+        offset_bytes=int(start_offset),
+        size_bytes=int(size_bytes),
+        timeout_sec=timeout_sec,
+    )
+    sha256_hex = hashlib.sha256(payload).hexdigest()
+    layer_indices = [
+        int(item.layer_index)
+        for item in spans
+        if item.layer_index is not None
+    ]
+    return ModelChunk(
+        chunk_id=make_chunk_id(
+            artifact.artifact_id,
+            offset_bytes=int(start_offset),
+            size_bytes=int(size_bytes),
+            sha256_hex=sha256_hex,
+        ),
+        artifact_id=artifact.artifact_id,
+        kind=ModelChunkKind.WEIGHTS,
+        offset_bytes=int(start_offset),
+        size_bytes=int(size_bytes),
+        sha256_hex=sha256_hex,
+        layer_start=min(layer_indices) if layer_indices else None,
+        layer_end=(max(layer_indices) + 1) if layer_indices else None,
+        tensor_names=[str(item.name) for item in spans],
+        required_by_default=not layer_indices,
+    )
+
+
+def _derive_family_from_model_filename(filename: str) -> str:
+    lowered = str(filename or "").lower()
+    for family in ("qwen", "llama", "deepseek", "mistral", "gemma", "phi"):
+        if family in lowered:
+            return family
+    return ""
+
+
+def _infer_total_layers_from_hf_gguf_metadata(
+    metadata: Mapping[str, Any],
+    architecture: str,
+) -> int:
+    candidate_keys: list[str] = []
+    clean_architecture = str(architecture or "").strip().lower()
+    if clean_architecture:
+        candidate_keys.append(f"{clean_architecture}.block_count")
+    candidate_keys.extend(
+        str(key)
+        for key in metadata.keys()
+        if str(key).endswith(".block_count") and str(key) not in candidate_keys
+    )
+    for key in (
+        *candidate_keys,
+        "block_count",
+        "n_layer",
+        "layers",
+        "num_hidden_layers",
+        "transformer.block_count",
+    ):
+        try:
+            value = int(metadata.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
+def _infer_total_layers_from_model_identity(
+    *,
+    model_id: str,
+    architecture: str,
+    filename: str,
+) -> int:
+    normalized = " ".join(
+        part.lower()
+        for part in (architecture, filename, str(model_id))
+        if part
+    )
+    if any(
+        token in normalized
+        for token in ("qwen2", "qwen2.5", "qwen2_5", "qwen1.5", "qwen1_5")
+    ):
+        return 24
+    if "qwen3" in normalized or "qwen" in normalized:
+        return 28
+    if "gemma" in normalized:
+        return 28
+    if any(token in normalized for token in ("llama", "mistral", "phi")):
+        return 32
+    return 0
+
+
+def import_model_package_manifest_from_url(
+    manifest_url: str,
+    *,
+    expected_model_id: str | None = None,
+    expected_preferred_filename: str | None = None,
+    timeout_sec: int = 15,
+    policy: WalletPolicy | None = None,
+) -> ModelPackageManifest:
+    payload = _read_json_url(str(manifest_url), timeout_sec=timeout_sec)
+    if isinstance(payload.get("manifest"), dict):
+        payload = payload["manifest"]
+    manifest = ModelPackageManifest.from_dict(payload)
+    _validate_imported_manifest_identity(
+        manifest,
+        expected_model_id=expected_model_id,
+        expected_preferred_filename=expected_preferred_filename,
+    )
+    save_model_package_manifest(manifest, policy)
+    return manifest
+
+
+def discover_and_import_hf_model_package_manifest(
+    model_id: str,
+    *,
+    preferred_filename: str | None = None,
+    source_revision: str | None = "main",
+    timeout_sec: int = 15,
+    policy: WalletPolicy | None = None,
+) -> ModelPackageManifest | None:
+    existing = select_model_package_manifest_for_model(model_id, policy)
+    if existing is not None:
+        return existing
+
+    candidate_paths = _discover_hf_model_package_manifest_paths(
+        model_id,
+        preferred_filename=preferred_filename,
+        source_revision=source_revision,
+        timeout_sec=timeout_sec,
+    )
+    for relative_path in candidate_paths:
+        manifest_url = _huggingface_resolve_url(
+            repo_id=model_id,
+            revision=source_revision,
+            relative_path=relative_path,
+        )
+        try:
+            return import_model_package_manifest_from_url(
+                manifest_url,
+                expected_model_id=model_id,
+                expected_preferred_filename=preferred_filename,
+                timeout_sec=timeout_sec,
+                policy=policy,
+            )
+        except Exception:
+            continue
+    return None
+
+
+def _discover_hf_model_package_manifest_paths(
+    repo_id: str,
+    *,
+    preferred_filename: str | None,
+    source_revision: str | None,
+    timeout_sec: int,
+) -> tuple[str, ...]:
+    explicit_candidates = _model_package_manifest_candidates_for_filename(
+        preferred_filename
+    )
+    discovered_candidates: list[str] = []
+    try:
+        repo_segment = quote(str(repo_id).strip(), safe="/")
+        revision = str(source_revision or "").strip()
+        if revision and revision != "main":
+            revision_segment = quote(revision, safe="")
+            api_url = (
+                f"https://huggingface.co/api/models/{repo_segment}"
+                f"/revision/{revision_segment}?blobs=true"
+            )
+        else:
+            api_url = f"https://huggingface.co/api/models/{repo_segment}?blobs=true"
+        info = _read_json_url(api_url, timeout_sec=timeout_sec)
+        discovered_candidates = _manifest_paths_from_hf_model_info(info)
+    except Exception:
+        discovered_candidates = []
+
+    ordered: list[str] = []
+    for candidate in (
+        *explicit_candidates,
+        *discovered_candidates,
+        *HF_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS,
+    ):
+        clean = str(candidate or "").replace("\\", "/").strip("/")
+        if clean and clean not in ordered:
+            ordered.append(clean)
+    return tuple(ordered)
+
+
+def _model_package_manifest_candidates_for_filename(
+    preferred_filename: str | None,
+) -> tuple[str, ...]:
+    clean = str(preferred_filename or "").replace("\\", "/").strip("/")
+    if not clean:
+        return ()
+    path = Path(clean)
+    parent = "" if str(path.parent) == "." else str(path.parent).replace("\\", "/")
+    stem = path.name
+    if stem.lower().endswith(".gguf"):
+        stem = stem[:-5]
+    names = (
+        f"{stem}.cai-manifest.json",
+        f"{stem}.model-package.json",
+        f"{stem}.model-package-manifest.json",
+        f"{path.name}.cai-manifest.json",
+        f"{path.name}.model-package.json",
+    )
+    if not parent:
+        return names
+    return tuple(f"{parent}/{name}" for name in names)
+
+
+def _manifest_paths_from_hf_model_info(payload: Mapping[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for sibling in payload.get("siblings", []):
+        if not isinstance(sibling, Mapping):
+            continue
+        filename = str(sibling.get("rfilename") or "").replace("\\", "/").strip("/")
+        if not filename:
+            continue
+        lowered = filename.lower()
+        basename = lowered.rsplit("/", 1)[-1]
+        if (
+            filename in HF_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS
+            or basename in HF_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS
+            or basename.endswith(".cai-manifest.json")
+            or basename.endswith(".model-package.json")
+            or basename.endswith(".model-package-manifest.json")
+        ):
+            paths.append(filename)
+    return paths
+
+
+def _validate_imported_manifest_identity(
+    manifest: ModelPackageManifest,
+    *,
+    expected_model_id: str | None,
+    expected_preferred_filename: str | None,
+) -> None:
+    clean_model_id = str(expected_model_id or "").strip()
+    if clean_model_id:
+        if clean_model_id not in _manifest_model_id_set(manifest):
+            raise ModelManifestValidationError(
+                "Imported model package manifest model_id mismatch: "
+                f"expected {clean_model_id}, got {manifest.model_id}."
+            )
+
+    expected_filename = Path(str(expected_preferred_filename or "")).name
+    manifest_filename = Path(str(manifest.preferred_filename or "")).name
+    if expected_filename and manifest_filename and expected_filename != manifest_filename:
+        raise ModelManifestValidationError(
+            "Imported model package manifest preferred filename mismatch: "
+            f"expected {expected_filename}, got {manifest_filename}."
+        )
+
+
 def _response_status_code(response: Any) -> int | None:
     status = getattr(response, "status", None)
     if status is not None:
@@ -4302,6 +4900,53 @@ def _response_status_code(response: Any) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _download_http_range(
+    url: str,
+    *,
+    offset_bytes: int,
+    size_bytes: int,
+    timeout_sec: int,
+) -> bytes:
+    end_byte = int(offset_bytes) + int(size_bytes) - 1
+    headers = _hf_request_headers()
+    headers["Range"] = f"bytes={int(offset_bytes)}-{end_byte}"
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=timeout_sec) as response:
+        status_code = _response_status_code(response)
+        if status_code != 206:
+            raise IOError(
+                f"Origin did not honor range request for {url}; "
+                f"expected HTTP 206, got {status_code or 'unknown'}."
+            )
+        payload = response.read()
+
+    if len(payload) != int(size_bytes):
+        raise IOError(f"Expected {size_bytes} bytes from {url}, got {len(payload)}.")
+    return payload
+
+
+def _download_hf_artifact_range(
+    *,
+    repo_id: str,
+    revision: str | None,
+    relative_path: str,
+    offset_bytes: int,
+    size_bytes: int,
+    timeout_sec: int,
+) -> bytes:
+    artifact_url = _huggingface_resolve_url(
+        repo_id=repo_id,
+        revision=revision,
+        relative_path=relative_path,
+    )
+    return _download_http_range(
+        artifact_url,
+        offset_bytes=offset_bytes,
+        size_bytes=size_bytes,
+        timeout_sec=timeout_sec,
+    )
 
 
 def _download_origin_artifact_range(
@@ -4333,29 +4978,12 @@ def _download_origin_artifact_range(
         revision=revision,
         relative_path=artifact.relative_path,
     )
-    end_byte = int(offset_bytes) + int(size_bytes) - 1
-    request = Request(
+    return _download_http_range(
         artifact_url,
-        headers={
-            "Range": f"bytes={int(offset_bytes)}-{end_byte}",
-            "User-Agent": "CAI-Compute-Chain/1.0",
-        },
+        offset_bytes=offset_bytes,
+        size_bytes=size_bytes,
+        timeout_sec=timeout_sec,
     )
-
-    with urlopen(request, timeout=timeout_sec) as response:
-        status_code = _response_status_code(response)
-        if status_code != 206:
-            raise IOError(
-                f"Origin did not honor range request for {artifact_url}; "
-                f"expected HTTP 206, got {status_code or 'unknown'}."
-            )
-        payload = response.read()
-
-    if len(payload) != int(size_bytes):
-        raise IOError(
-            f"Expected {size_bytes} bytes from {artifact_url}, got {len(payload)}."
-        )
-    return payload
 
 
 def _read_origin_chunk_bytes(
@@ -5531,7 +6159,7 @@ def find_model_package_manifests_for_model(
     return [
         manifest
         for manifest in list_model_package_manifests(policy)
-        if manifest.model_id == normalized
+        if normalized in _manifest_model_id_set(manifest)
     ]
 
 
@@ -5547,6 +6175,17 @@ def select_model_package_manifest_for_model(
         return (str(manifest.version), str(manifest.created_at))
 
     return sorted(manifests, key=_sort_key, reverse=True)[0]
+
+
+def _manifest_model_id_set(manifest: ModelPackageManifest) -> set[str]:
+    aliases = manifest.metadata.get("model_id_aliases", ())
+    if isinstance(aliases, str):
+        alias_set = {aliases}
+    elif isinstance(aliases, (list, tuple, set)):
+        alias_set = {str(item) for item in aliases}
+    else:
+        alias_set = set()
+    return {manifest.model_id, *alias_set}
 
 
 def make_chunk_id(

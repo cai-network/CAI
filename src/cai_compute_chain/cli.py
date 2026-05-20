@@ -88,12 +88,15 @@ from .model_distribution import (
     build_assignment_fetch_plan_from_store,
     build_chunk_download_tasks_from_fetch_plan,
     build_local_chunk_inventory_payload,
+    build_hf_gguf_model_package_manifest,
     build_gguf_model_package_manifest,
     chunk_download_queue_snapshot,
     chunk_store_snapshot,
+    discover_and_import_hf_model_package_manifest,
     evict_chunks_to_policy_target,
     ensure_assignment_ready_from_store,
     execute_chunk_download_queue,
+    import_model_package_manifest_from_url,
     load_chunk_source_bindings,
     load_local_artifact_bindings,
     list_chunk_download_tasks,
@@ -592,6 +595,48 @@ def build_parser() -> argparse.ArgumentParser:
     model_package_create_gguf_parser.add_argument("--source-revision", default="main")
     model_package_create_gguf_parser.add_argument("--family", default="")
     model_package_create_gguf_parser.add_argument("--quantization", default="")
+    model_package_create_hf_gguf_parser = subparsers.add_parser(
+        "model-package-create-hf-gguf",
+        help="Build and save a CAI model package manifest from a Hugging Face GGUF artifact using range requests",
+    )
+    model_package_create_hf_gguf_parser.add_argument("model_id")
+    model_package_create_hf_gguf_parser.add_argument("version")
+    model_package_create_hf_gguf_parser.add_argument("--catalog-id")
+    model_package_create_hf_gguf_parser.add_argument("--preferred-filename")
+    model_package_create_hf_gguf_parser.add_argument("--n-layers", type=int)
+    model_package_create_hf_gguf_parser.add_argument(
+        "--package-kind",
+        choices=["public_shared", "private_curated"],
+        default="public_shared",
+    )
+    model_package_create_hf_gguf_parser.add_argument(
+        "--chunk-size-policy",
+        choices=["small", "balanced", "large", "adaptive"],
+        default="adaptive",
+    )
+    model_package_create_hf_gguf_parser.add_argument("--min-chunk-mb", type=int, default=64)
+    model_package_create_hf_gguf_parser.add_argument("--max-chunk-mb", type=int, default=512)
+    model_package_create_hf_gguf_parser.add_argument("--target-chunks", type=int)
+    model_package_create_hf_gguf_parser.add_argument("--source-revision", default="main")
+    model_package_create_hf_gguf_parser.add_argument("--family", default="")
+    model_package_create_hf_gguf_parser.add_argument("--quantization", default="")
+    model_package_create_hf_gguf_parser.add_argument("--timeout-sec", type=int, default=30)
+    model_package_import_url_parser = subparsers.add_parser(
+        "model-package-import-url",
+        help="Import a CAI model package manifest from a URL",
+    )
+    model_package_import_url_parser.add_argument("manifest_url")
+    model_package_import_url_parser.add_argument("--expected-model-id")
+    model_package_import_url_parser.add_argument("--expected-preferred-filename")
+    model_package_import_url_parser.add_argument("--timeout-sec", type=int, default=15)
+    model_package_import_hf_parser = subparsers.add_parser(
+        "model-package-import-hf",
+        help="Discover and import a CAI model package manifest from a Hugging Face model repo",
+    )
+    model_package_import_hf_parser.add_argument("model_id")
+    model_package_import_hf_parser.add_argument("--preferred-filename")
+    model_package_import_hf_parser.add_argument("--source-revision", default="main")
+    model_package_import_hf_parser.add_argument("--timeout-sec", type=int, default=15)
     launch_check_local_port = CaiNetworkConfig().default_api_port
     launch_check_parser = subparsers.add_parser(
         "launch-check", help="Run alpha launch readiness checks"
@@ -2492,6 +2537,104 @@ def handle_model_package_create_gguf(
     ).strip()
 
 
+def handle_model_package_create_hf_gguf(
+    model_id: str,
+    version: str,
+    *,
+    catalog_id: str | None,
+    preferred_filename: str | None,
+    n_layers: int | None,
+    package_kind: str,
+    chunk_size_policy: str,
+    min_chunk_mb: int,
+    max_chunk_mb: int,
+    target_chunks: int | None,
+    source_revision: str,
+    family: str,
+    quantization: str,
+    timeout_sec: int,
+) -> str:
+    manifest = build_hf_gguf_model_package_manifest(
+        model_id=model_id,
+        version=version,
+        catalog_id=catalog_id,
+        preferred_filename=preferred_filename,
+        total_layers=n_layers,
+        package_kind=package_kind,
+        chunk_size_policy=chunk_size_policy,
+        min_chunk_bytes=min_chunk_mb * 1024 * 1024,
+        max_chunk_bytes=max_chunk_mb * 1024 * 1024,
+        target_chunk_count=target_chunks,
+        source_revision=source_revision,
+        family=family,
+        quantization=quantization,
+        timeout_sec=timeout_sec,
+    )
+    saved_path = save_model_package_manifest(manifest)
+    return dedent(
+        f"""
+        Hugging Face GGUF model package manifest created:
+        - catalog_id={manifest.catalog_id}
+        - model_id={manifest.model_id}
+        - version={manifest.version}
+        - manifest_path={saved_path}
+        - file={manifest.preferred_filename or '<unknown>'}
+        - total_size_bytes={manifest.total_size_bytes}
+        - chunk_count={len(manifest.chunks)}
+        - chunk_size_policy={manifest.chunk_size_policy}
+        """
+    ).strip()
+
+
+def _render_imported_model_package_manifest(manifest, saved_from: str) -> str:
+    return dedent(
+        f"""
+        Model package manifest imported:
+        - source={saved_from}
+        - catalog_id={manifest.catalog_id}
+        - model_id={manifest.model_id}
+        - version={manifest.version}
+        - file={manifest.preferred_filename or '<unknown>'}
+        - total_size_bytes={manifest.total_size_bytes}
+        - chunk_count={len(manifest.chunks)}
+        """
+    ).strip()
+
+
+def handle_model_package_import_url(
+    manifest_url: str,
+    *,
+    expected_model_id: str | None,
+    expected_preferred_filename: str | None,
+    timeout_sec: int,
+) -> str:
+    manifest = import_model_package_manifest_from_url(
+        manifest_url,
+        expected_model_id=expected_model_id,
+        expected_preferred_filename=expected_preferred_filename,
+        timeout_sec=timeout_sec,
+    )
+    return _render_imported_model_package_manifest(manifest, manifest_url)
+
+
+def handle_model_package_import_hf(
+    model_id: str,
+    *,
+    preferred_filename: str | None,
+    source_revision: str,
+    timeout_sec: int,
+) -> str:
+    manifest = discover_and_import_hf_model_package_manifest(
+        model_id,
+        preferred_filename=preferred_filename,
+        source_revision=source_revision,
+        timeout_sec=timeout_sec,
+    )
+    if manifest is None:
+        return f"No CAI model package manifest discovered for {model_id}."
+    return _render_imported_model_package_manifest(manifest, f"hf:{model_id}")
+
+
 def handle_chunk_store() -> str:
     snapshot = chunk_store_snapshot()
     stats = snapshot.stats
@@ -4181,6 +4324,49 @@ def main() -> None:
                 source_revision=args.source_revision,
                 family=args.family,
                 quantization=args.quantization,
+            )
+        )
+        return
+
+    if args.command == "model-package-create-hf-gguf":
+        print(
+            handle_model_package_create_hf_gguf(
+                args.model_id,
+                args.version,
+                catalog_id=args.catalog_id,
+                preferred_filename=args.preferred_filename,
+                n_layers=args.n_layers,
+                package_kind=args.package_kind,
+                chunk_size_policy=args.chunk_size_policy,
+                min_chunk_mb=args.min_chunk_mb,
+                max_chunk_mb=args.max_chunk_mb,
+                target_chunks=args.target_chunks,
+                source_revision=args.source_revision,
+                family=args.family,
+                quantization=args.quantization,
+                timeout_sec=args.timeout_sec,
+            )
+        )
+        return
+
+    if args.command == "model-package-import-url":
+        print(
+            handle_model_package_import_url(
+                args.manifest_url,
+                expected_model_id=args.expected_model_id,
+                expected_preferred_filename=args.expected_preferred_filename,
+                timeout_sec=args.timeout_sec,
+            )
+        )
+        return
+
+    if args.command == "model-package-import-hf":
+        print(
+            handle_model_package_import_hf(
+                args.model_id,
+                preferred_filename=args.preferred_filename,
+                source_revision=args.source_revision,
+                timeout_sec=args.timeout_sec,
             )
         )
         return

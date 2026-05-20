@@ -80,7 +80,9 @@ from cai.worker.runner.runner_supervisor import RunnerSupervisor
 
 
 CAI_CHUNK_SEED_URLS_ENV = "CAI_CHUNK_SEED_URLS"
+CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY_ENV = "CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY"
 _CAI_OWNED_TRANSPORT_FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
+_REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS: set[tuple[str, str, str]] = set()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -592,6 +594,80 @@ def _prefetch_chunk_backed_recent_shard_hints(
         return None
 
 
+def _select_or_import_chunk_backed_manifest(
+    model_distribution,
+    shard,
+) -> object | None:
+    model_id = str(shard.model_card.model_id)
+    manifest = model_distribution.select_model_package_manifest_for_model(model_id)
+    if manifest is not None:
+        return manifest
+
+    preferred_filename = str(
+        getattr(shard.model_card, "preferred_filename", None) or ""
+    ).strip()
+    source_revision = str(
+        getattr(shard.model_card, "model_package_version", None) or "main"
+    ).strip() or "main"
+    explicit_manifest_url = str(
+        getattr(shard.model_card, "model_package_manifest_url", None) or ""
+    ).strip()
+    if explicit_manifest_url:
+        attempt_key = (model_id, preferred_filename, explicit_manifest_url)
+        if attempt_key not in _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS:
+            _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.add(attempt_key)
+            importer = getattr(
+                model_distribution,
+                "import_model_package_manifest_from_url",
+                None,
+            )
+            if callable(importer):
+                try:
+                    imported = importer(
+                        explicit_manifest_url,
+                        expected_model_id=model_id,
+                        expected_preferred_filename=preferred_filename or None,
+                    )
+                    if imported is not None:
+                        return imported
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to import CAI model package manifest for {} from {}: {}",
+                        model_id,
+                        explicit_manifest_url,
+                        exc,
+                    )
+
+    if _env_bool(CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY_ENV, False):
+        return None
+
+    attempt_key = (model_id, preferred_filename, "hf-discovery")
+    if attempt_key in _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS:
+        return None
+    _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.add(attempt_key)
+    discoverer = getattr(
+        model_distribution,
+        "discover_and_import_hf_model_package_manifest",
+        None,
+    )
+    if not callable(discoverer):
+        return None
+    try:
+        return discoverer(
+            model_id,
+            preferred_filename=preferred_filename or None,
+            source_revision=source_revision,
+            timeout_sec=5,
+        )
+    except Exception as exc:
+        logger.debug(
+            "No importable CAI model package manifest discovered for {}: {}",
+            model_id,
+            exc,
+        )
+        return None
+
+
 def _try_prepare_chunk_backed_llama_cpp_download(
     node_id: NodeId,
     shard,
@@ -608,9 +684,7 @@ def _try_prepare_chunk_backed_llama_cpp_download(
     except Exception:
         return None
 
-    manifest = model_distribution.select_model_package_manifest_for_model(
-        str(shard.model_card.model_id)
-    )
+    manifest = _select_or_import_chunk_backed_manifest(model_distribution, shard)
     if manifest is None:
         return None
 

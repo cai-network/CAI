@@ -1217,6 +1217,9 @@ SPDX-License-Identifier: Apache-2.0
       gguf_architecture?: string;
       shard_compatibility?: string;
       layer_range_supported?: boolean;
+      model_package_manifest_url?: string | null;
+      model_package_catalog_id?: string | null;
+      model_package_version?: string | null;
       layer_range_probe_report?: string | null;
       layer_range_equivalence_probe_report?: string | null;
       shard_compatibility_reason?: string;

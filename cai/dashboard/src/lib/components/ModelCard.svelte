@@ -20,6 +20,9 @@ SPDX-License-Identifier: Apache-2.0
       gguf_architecture?: string;
       shard_compatibility?: string;
       layer_range_supported?: boolean;
+      model_package_manifest_url?: string | null;
+      model_package_catalog_id?: string | null;
+      model_package_version?: string | null;
       layer_range_probe_report?: string | null;
       layer_range_equivalence_probe_report?: string | null;
       shard_compatibility_reason?: string;
@@ -208,6 +211,9 @@ SPDX-License-Identifier: Apache-2.0
   const showGgufShardMode = $derived(
     runtime === "LlamaCpp" && ggufShardCompatibility.length > 0,
   );
+  const hasModelPackageManifest = $derived(
+    Boolean(model.model_package_manifest_url || model.model_package_catalog_id),
+  );
 
   const nodeList = $derived(() => {
     const ids = new Set(Object.keys(nodes));
@@ -358,6 +364,14 @@ SPDX-License-Identifier: Apache-2.0
             ggufShardCompatibility}
         >
           {shardModeLabel(ggufShardCompatibility, model.layer_range_supported)}
+        </span>
+      {/if}
+      {#if hasModelPackageManifest}
+        <span
+          class="px-1.5 py-0.5 text-xs font-mono tracking-wider uppercase bg-cai-yellow/10 text-cai-yellow border border-cai-yellow/25"
+          title={tr("This model publishes a CAI chunk manifest, so workers can prepare only the assigned GGUF chunks.")}
+        >
+          {tr("Chunk manifest")}
         </span>
       {/if}
     </div>
