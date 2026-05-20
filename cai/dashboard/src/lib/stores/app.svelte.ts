@@ -3124,7 +3124,10 @@ class AppStore {
     if ((!content.trim() && (!files || files.length === 0)) || this.isLoading)
       return;
 
-    if (!this.activeConversationId) {
+    if (
+      !this.activeConversationId ||
+      !this.conversationExists(this.activeConversationId)
+    ) {
       this.createConversation();
     } else if (!this.hasStartedChat) {
       this.startChat();
