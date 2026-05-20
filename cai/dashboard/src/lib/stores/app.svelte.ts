@@ -116,6 +116,24 @@ interface RawSystemPerformanceProfile {
   ecpuUsage?: number;
 }
 
+interface CaiOwnedTransportReadiness {
+  protocol?: string | null;
+  status?: string | null;
+  ready?: boolean;
+  runtimeReady?: boolean;
+  reason?: string | null;
+  workerCount?: number;
+  runtimeReadyWorkerCount?: number;
+  implementedWorkerCount?: number;
+  failedWorkerCount?: number;
+  missingWorkerCount?: number;
+  observedStatuses?: string[];
+  runtimeReadyWorkerIds?: string[];
+  implementedWorkerIds?: string[];
+  failedWorkerIds?: string[];
+  missingWorkerIds?: string[];
+}
+
 interface RawNetworkInterfaceInfo {
   name?: string;
   ipAddress?: string;
@@ -461,6 +479,11 @@ export interface CaiSummary {
     payout_records?: number;
     runtimeQueue?: CaiWorkerRuntimeQueue;
     runtime_queue?: CaiWorkerRuntimeQueue;
+    readiness?: {
+      caiOwnedTransport?: CaiOwnedTransportReadiness | null;
+    };
+    caiOwnedTransport?: CaiOwnedTransportReadiness | null;
+    cai_owned_transport?: CaiOwnedTransportReadiness | null;
   };
   reward?: {
     payout_records?: number;
@@ -659,23 +682,7 @@ interface RawStateResponse {
     llamaCppLargestDirectWorkerCycle?: number;
     llamaCppDistributedReady?: boolean;
     llamaCppDistributedReason?: string | null;
-    caiOwnedTransportReadiness?: {
-      protocol?: string | null;
-      status?: string | null;
-      ready?: boolean;
-      runtimeReady?: boolean;
-      reason?: string | null;
-      workerCount?: number;
-      runtimeReadyWorkerCount?: number;
-      implementedWorkerCount?: number;
-      failedWorkerCount?: number;
-      missingWorkerCount?: number;
-      observedStatuses?: string[];
-      runtimeReadyWorkerIds?: string[];
-      implementedWorkerIds?: string[];
-      failedWorkerIds?: string[];
-      missingWorkerIds?: string[];
-    };
+    caiOwnedTransportReadiness?: CaiOwnedTransportReadiness;
   };
   topology?: RawTopology;
   instances?: Record<
@@ -2935,6 +2942,22 @@ class AppStore {
     return compatibleModelIds.size > 0 && compatibleModelIds.has(normalizedModelId);
   }
 
+  private isCaiMeteredTransportReady(): boolean {
+    const worker = this.caiSummary?.worker;
+    const workerReadiness =
+      worker?.readiness?.caiOwnedTransport ??
+      worker?.caiOwnedTransport ??
+      worker?.cai_owned_transport ??
+      null;
+    const readiness =
+      this.networkSummary?.caiOwnedTransportReadiness ?? workerReadiness;
+    const status = readiness?.status?.trim().toLowerCase() ?? "";
+
+    return Boolean(
+      readiness?.runtimeReady || readiness?.ready || status === "ready",
+    );
+  }
+
   private resolvePreferredTextChatModel(
     modelId?: string | null,
   ): string | null {
@@ -3044,7 +3067,13 @@ class AppStore {
     }
 
     const meteredModelId = this.resolveMeteredChatModelId(modelId);
-    return this.isWorkerCompatibleTextModelId(meteredModelId);
+    if (!this.isWorkerCompatibleTextModelId(meteredModelId)) {
+      return false;
+    }
+    if (this.hasRunningInstanceForModel(meteredModelId)) {
+      return false;
+    }
+    return this.isCaiMeteredTransportReady();
   }
 
   private requireCaiWalletForMeteredChat(
@@ -3090,11 +3119,17 @@ class AppStore {
       pageImages?: string[];
     }[],
     enableThinking?: boolean | null,
+    modelId?: string,
   ): Promise<void> {
     if ((!content.trim() && (!files || files.length === 0)) || this.isLoading)
       return;
 
-    if (!this.hasStartedChat) {
+    if (
+      !this.activeConversationId ||
+      !this.conversationExists(this.activeConversationId)
+    ) {
+      this.createConversation();
+    } else if (!this.hasStartedChat) {
       this.startChat();
     }
 
@@ -3284,7 +3319,7 @@ class AppStore {
       ];
 
       // Determine the model to use
-      const endpointModel = this.getModelForRequest();
+      const endpointModel = this.getModelForRequest(modelId);
       const routingModel = endpointModel ?? undefined;
       const modelToUse = this.shouldUseCaiMeteredChat(apiMessages, routingModel)
         ? this.resolveMeteredChatModelId(routingModel)
@@ -4307,7 +4342,8 @@ export const sendMessage = (
     pageImages?: string[];
   }[],
   enableThinking?: boolean | null,
-) => appStore.sendMessage(content, files, enableThinking);
+  modelId?: string,
+) => appStore.sendMessage(content, files, enableThinking, modelId);
 export const generateImage = (prompt: string, modelId?: string) =>
   appStore.generateImage(prompt, modelId);
 export const editImage = (

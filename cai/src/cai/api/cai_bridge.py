@@ -12,6 +12,7 @@ import socket
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -58,6 +59,7 @@ class CaiBridgeService:
         cai_url: str | None = None,
         execution_cai_url: str | None = None,
         local_node_id: str | None = None,
+        state_payload_loader: Callable[[], dict[str, Any]] | None = None,
         CAI_url: str | None = None,
     ) -> None:
         resolved_cai_url = str(cai_url or CAI_url or "").rstrip("/")
@@ -67,6 +69,7 @@ class CaiBridgeService:
         self.cai_url = resolved_cai_url
         self.execution_cai_url = str(execution_cai_url or resolved_cai_url).rstrip("/")
         self.local_node_id = local_node_id
+        self._state_payload_loader = state_payload_loader
         self.modules = _CaiModules()
         self.money_policy = self.modules.model.MoneyPolicy()
         self.network_config = self.modules.model.CaiNetworkConfig()
@@ -77,11 +80,16 @@ class CaiBridgeService:
     def CAI_url(self) -> str:
         return self.cai_url
 
+    def _load_state_payload(self) -> dict[str, Any]:
+        if self._state_payload_loader is not None:
+            return self._state_payload_loader()
+        return _load_state_payload(self.state_url)
+
     def summary(self) -> dict[str, Any]:
         maintenance_errors: list[dict[str, str]] = []
         maintenance_results: dict[str, Any] = {}
         try:
-            state_payload = _load_state_payload(self.state_url)
+            state_payload = self._load_state_payload()
         except Exception as exc:
             state_payload = None
             maintenance_errors.append(_operation_error_payload("load_state_payload", exc))
@@ -393,7 +401,7 @@ class CaiBridgeService:
     def validator_set(self) -> dict[str, Any]:
         try:
             self.modules.node_config.refresh_validator_ha_lease(
-                state_payload=_load_state_payload(self.state_url),
+                state_payload=self._load_state_payload(),
                 cai_url=self.cai_url,
                 policy=self.wallet_policy,
                 allow_failover=True,
@@ -613,7 +621,7 @@ class CaiBridgeService:
                 "validatorSet": self.validator_set(),
             }
 
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         result = self.modules.validators.sync_validator_set_from_cai_peers(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -666,7 +674,7 @@ class CaiBridgeService:
         return self._sign_peer_payload(payload)
 
     def sync_validator_evidence(self) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         result = self.modules.settlement.sync_validator_evidence_from_cai_peers(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -706,7 +714,7 @@ class CaiBridgeService:
         return payload.to_dict()
 
     def sync_chunk_inventory(self, *, source_kind: str = "peer_cache") -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         result = self.modules.model_distribution.sync_chunk_inventory_from_cai_peers(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -723,7 +731,7 @@ class CaiBridgeService:
         }
 
     def node_capabilities(self) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         payload = self.modules.node_capabilities.export_node_capabilities_payload(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -743,7 +751,7 @@ class CaiBridgeService:
         return self._sign_peer_payload(payload)
 
     def sync_node_capabilities(self) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         self.modules.node_capabilities.refresh_local_node_capabilities(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -836,7 +844,7 @@ class CaiBridgeService:
             pass
 
         try:
-            state_payload = _load_state_payload(self.state_url)
+            state_payload = self._load_state_payload()
         except Exception:
             state_payload = {}
         try:
@@ -932,7 +940,7 @@ class CaiBridgeService:
         if not ok:
             raise ValueError(error or "Worker capability challenge is invalid.")
 
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         records = self.modules.node_capabilities.refresh_local_node_capabilities(
             state_payload=state_payload,
             cai_url=self.cai_url,
@@ -1017,7 +1025,7 @@ class CaiBridgeService:
         }
 
     def compute_cells(self) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         records = self.modules.route_health.list_route_health_records(
             self.wallet_policy
         )
@@ -1592,7 +1600,7 @@ class CaiBridgeService:
         )
 
     def probe_route_health(self) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         direct_records = self.modules.route_health.probe_direct_api_routes(
             state_payload=state_payload,
             local_node_id=getattr(self, "local_node_id", None),
@@ -1674,7 +1682,7 @@ class CaiBridgeService:
             payload.get("accepted_note")
             or "Remote committee validator accepted settlement."
         )
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         attestation_status = self.modules.node_config.get_validator_attestation_status(
             policy=self.wallet_policy,
             state_payload=state_payload,
@@ -1747,7 +1755,7 @@ class CaiBridgeService:
         }
 
     def attest_worker_capability(self, payload: dict[str, Any]) -> dict[str, Any]:
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         attestation_status = self.modules.node_config.get_validator_attestation_status(
             policy=self.wallet_policy,
             state_payload=state_payload,
@@ -2291,7 +2299,7 @@ class CaiBridgeService:
             payload.get("accepted_note")
             or "Remote committee validator accepted penalty case."
         )
-        state_payload = _load_state_payload(self.state_url)
+        state_payload = self._load_state_payload()
         attestation_status = self.modules.node_config.get_validator_attestation_status(
             policy=self.wallet_policy,
             state_payload=state_payload,
@@ -2642,7 +2650,7 @@ class CaiBridgeService:
                         or "Validator mode cannot be enabled on this node."
                     )
                 )
-            state_payload = _load_state_payload(self.state_url)
+            state_payload = self._load_state_payload()
         config = self.modules.node_config.set_validator_mode(
             enabled,
             self.wallet_policy,
@@ -2862,7 +2870,7 @@ class CaiBridgeService:
 
     def _resolve_local_worker_node_id(self) -> str | None:
         try:
-            state_payload = _load_state_payload(self.state_url)
+            state_payload = self._load_state_payload()
         except Exception:
             return None
 
@@ -2934,6 +2942,7 @@ def load_cai_summary(
     cai_url: str | None = None,
     execution_cai_url: str | None = None,
     local_node_id: str | None = None,
+    state_payload_loader: Callable[[], dict[str, Any]] | None = None,
     CAI_url: str | None = None,
 ) -> dict[str, Any]:
     try:
@@ -2942,6 +2951,7 @@ def load_cai_summary(
             cai_url=cai_url,
             execution_cai_url=execution_cai_url,
             local_node_id=local_node_id,
+            state_payload_loader=state_payload_loader,
             CAI_url=CAI_url,
         ).summary()
     except Exception as exc:  # noqa: BLE001
@@ -2957,6 +2967,7 @@ def make_cai_service(
     cai_url: str | None = None,
     execution_cai_url: str | None = None,
     local_node_id: str | None = None,
+    state_payload_loader: Callable[[], dict[str, Any]] | None = None,
     CAI_url: str | None = None,
 ) -> CaiBridgeService:
     return CaiBridgeService(
@@ -2964,6 +2975,7 @@ def make_cai_service(
         cai_url=cai_url,
         execution_cai_url=execution_cai_url,
         local_node_id=local_node_id,
+        state_payload_loader=state_payload_loader,
         CAI_url=CAI_url,
     )
 

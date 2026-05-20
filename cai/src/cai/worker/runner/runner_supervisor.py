@@ -191,6 +191,7 @@ class RunnerSupervisor:
         except ClosedResourceError:
             self.in_progress.pop(task.task_id, None)
             logger.warning(f"Task {task} dropped, runner closed communication.")
+            await self._check_runner(RuntimeError("runner closed communication"))
             return
         await event.wait()
 
@@ -219,7 +220,9 @@ class RunnerSupervisor:
                     if isinstance(event, RunnerStatusUpdated):
                         self.status = event.runner_status
                     if isinstance(event, TaskAcknowledged):
-                        self.pending.pop(event.task_id).set()
+                        pending_event = self.pending.pop(event.task_id, None)
+                        if pending_event is not None:
+                            pending_event.set()
                         continue
                     if (
                         isinstance(event, TaskStatusUpdated)
@@ -242,8 +245,8 @@ class RunnerSupervisor:
         except (ClosedResourceError, BrokenResourceError) as e:
             await self._check_runner(e)
         finally:
-            for tid in self.pending:
-                self.pending[tid].set()
+            for pending_event in list(self.pending.values()):
+                pending_event.set()
 
     async def _watch_runner(self) -> None:
         with self._cancel_watch_runner:
@@ -262,9 +265,10 @@ class RunnerSupervisor:
         rc = self.runner_process.exitcode
         logger.info(f"Runner exited with exit code {rc}")
         if rc == 0:
-            return
-
-        if isinstance(rc, int) and rc < 0:
+            if not self.pending and not self.in_progress:
+                return
+            cause = "clean exit with pending tasks"
+        elif isinstance(rc, int) and rc < 0:
             sig = -rc
             try:
                 cause = f"signal={sig} ({signal.strsignal(sig)})"
@@ -304,5 +308,9 @@ class RunnerSupervisor:
             logger.warning(
                 "Event sender already closed, unable to report runner failure"
             )
+        for pending_event in self.pending.values():
+            pending_event.set()
+        self.pending.clear()
+        self.in_progress.clear()
         self.shutdown()
 
