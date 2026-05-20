@@ -3452,6 +3452,14 @@ SPDX-License-Identifier: Apache-2.0
     chatInputDraft = value;
   }
 
+  function isActiveChatLaunchState(state: ChatLaunchState): boolean {
+    return (
+      state === "launching" ||
+      state === "downloading" ||
+      state === "loading"
+    );
+  }
+
   // Restore chat launch state when switching conversations
   $effect(() => {
     const currentModel = selectedChatModel();
@@ -3467,7 +3475,16 @@ SPDX-License-Identifier: Apache-2.0
       return;
     }
 
-    // Model is already running — no progress to show
+    // Direct CAI text chat does not need a local instance progress screen.
+    if (canUseCaiDirectTextChat(currentModel)) {
+      if (chatLaunchState !== "ready") {
+        chatLaunchState = "ready";
+      }
+      pendingChatModelId = currentModel;
+      return;
+    }
+
+    // Model is already running, so there is no progress to show.
     if (hasRunningInstance(currentModel)) {
       if (chatLaunchState !== "ready") {
         chatLaunchState = "ready";
@@ -3503,6 +3520,13 @@ SPDX-License-Identifier: Apache-2.0
         pendingChatModelId = currentModel;
         return;
       }
+    }
+
+    if (
+      pendingChatModelId === currentModel &&
+      isActiveChatLaunchState(chatLaunchState)
+    ) {
+      return;
     }
 
     // Fallthrough: model exists but has no active instance/download/loading state
@@ -4065,10 +4089,8 @@ SPDX-License-Identifier: Apache-2.0
 
   // Handle model selection from the picker when opened from chat context
   function handleChatPickerSelect(modelId: string) {
-    setSelectedChatModel(modelId);
-    selectPreviewModel(modelId);
-    userForcedIdle = false;
     isModelPickerOpen = false;
+    void launchModelForChat(modelId, "picker", messages().length > 0);
   }
 
   // Unified send handler: sends if model running, auto-launches if not
