@@ -40,7 +40,7 @@ SPDX-License-Identifier: Apache-2.0
         textContent?: string;
         preview?: string;
       }[],
-    ) => void;
+    ) => boolean | void | Promise<boolean | void>;
     onOpenModelPicker?: () => void;
     modelDisplayOverride?: string;
     draftValue?: string;
@@ -64,10 +64,12 @@ SPDX-License-Identifier: Apache-2.0
   }: Props = $props();
 
   let message = $state("");
+  let lastAppliedDraftValue: string | undefined;
   let textareaRef: HTMLTextAreaElement | undefined = $state();
   let fileInputRef: HTMLInputElement | undefined = $state();
   let uploadedFiles = $state<ChatUploadedFile[]>([]);
   let isDragOver = $state(false);
+  let submitInFlight = $state(false);
   const thinkingEnabled = $derived(thinkingEnabledStore());
   let loading = $derived(isLoading());
   const currentModel = $derived(selectedChatModel());
@@ -212,21 +214,42 @@ SPDX-License-Identifier: Apache-2.0
     }
   }
 
-  function handleSubmit() {
-    if ((!message.trim() && uploadedFiles.length === 0) || loading) return;
+  async function handleSubmit() {
+    if (
+      (!message.trim() && uploadedFiles.length === 0) ||
+      loading ||
+      submitInFlight
+    ) {
+      return;
+    }
     if (isEditOnlyWithoutImage) return;
 
     const content = message.trim();
     const files = [...uploadedFiles];
 
+    submitInFlight = true;
+    let accepted: boolean | void;
+    try {
+      accepted = await onAutoSend(content, files);
+    } catch (error) {
+      console.error("Chat submit failed", error);
+      accepted = false;
+    } finally {
+      submitInFlight = false;
+    }
+
+    if (accepted === false) {
+      lastAppliedDraftValue = content;
+      onDraftChange?.(content);
+      setTimeout(() => textareaRef?.focus(), 10);
+      return;
+    }
+
     message = "";
+    lastAppliedDraftValue = "";
     onDraftChange?.("");
     uploadedFiles = [];
     resetTextareaHeight();
-
-    // Parent controls all send logic (including image routing,
-    // launching non-running models before sending, etc.)
-    onAutoSend(content, files);
     onSend?.();
     setTimeout(() => textareaRef?.focus(), 10);
   }
@@ -235,7 +258,12 @@ SPDX-License-Identifier: Apache-2.0
     if (event?.currentTarget instanceof HTMLTextAreaElement) {
       message = event.currentTarget.value;
     }
+    lastAppliedDraftValue = message;
     onDraftChange?.(message);
+    resizeTextarea();
+  }
+
+  function resizeTextarea() {
     if (!textareaRef) return;
     textareaRef.style.height = "auto";
     textareaRef.style.height = Math.min(textareaRef.scrollHeight, 150) + "px";
@@ -261,9 +289,14 @@ SPDX-License-Identifier: Apache-2.0
   });
 
   $effect(() => {
-    if (draftValue !== undefined && draftValue !== message) {
-      message = draftValue;
-      setTimeout(handleInput, 0);
+    const nextDraftValue = draftValue;
+    if (
+      nextDraftValue !== undefined &&
+      nextDraftValue !== lastAppliedDraftValue
+    ) {
+      lastAppliedDraftValue = nextDraftValue;
+      message = nextDraftValue;
+      setTimeout(resizeTextarea, 0);
     }
   });
 
@@ -276,7 +309,7 @@ SPDX-License-Identifier: Apache-2.0
   });
 
   const canSend = $derived(
-    message.trim().length > 0 || uploadedFiles.length > 0,
+    !submitInFlight && (message.trim().length > 0 || uploadedFiles.length > 0),
   );
 </script>
 
@@ -524,9 +557,9 @@ SPDX-License-Identifier: Apache-2.0
       {:else}
         <button
           type="submit"
-          disabled={!canSend || isEditOnlyWithoutImage}
+          disabled={!canSend || submitInFlight || isEditOnlyWithoutImage}
           class="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded text-xs sm:text-xs tracking-[0.1em] sm:tracking-[0.15em] uppercase font-medium transition-all duration-200 whitespace-nowrap
-					{!canSend || isEditOnlyWithoutImage
+					{!canSend || submitInFlight || isEditOnlyWithoutImage
             ? 'bg-cai-medium-gray/50 text-cai-light-gray cursor-not-allowed'
             : 'bg-cai-yellow text-cai-black hover:bg-cai-yellow-darker hover:shadow-[0_0_20px_rgba(125,211,252,0.3)]'}"
           aria-label={shouldShowEditMode

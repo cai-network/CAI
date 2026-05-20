@@ -1281,11 +1281,11 @@ SPDX-License-Identifier: Apache-2.0
     const walletAccessPrompt = getCaiWalletAccessPrompt(model, files);
     if (walletAccessPrompt) {
       showWalletAccessPrompt(walletAccessPrompt);
-      return;
+      return false;
     }
     if (!model) {
       sendMessage(content, files, thinkingEnabled());
-      return;
+      return true;
     }
 
     const currentEditImage = editingImage();
@@ -1293,7 +1293,7 @@ SPDX-License-Identifier: Apache-2.0
     // Image editing mode (explicit edit or attached image with ImageToImage model)
     if (currentEditImage && content && modelSupportsImageEditing(model)) {
       editImage(content, currentEditImage.imageDataUrl);
-      return;
+      return true;
     }
     if (
       modelSupportsImageEditing(model) &&
@@ -1302,17 +1302,18 @@ SPDX-License-Identifier: Apache-2.0
       content
     ) {
       editImage(content, files[0].preview);
-      return;
+      return true;
     }
 
     // Text-to-image generation
     if (modelSupportsImageGeneration(model) && content) {
       generateImage(content);
-      return;
+      return true;
     }
 
     // Default: text chat
     sendMessage(content, files, thinkingEnabled());
+    return true;
   }
 
   function hasVisualAttachments(
@@ -3648,10 +3649,11 @@ SPDX-License-Identifier: Apache-2.0
     userForcedIdle = false;
     pendingChatModelId = modelId;
     selectedChatCategory = category;
+    setSelectedChatModel(modelId);
+    selectPreviewModel(modelId);
 
     // Check if already running — skip straight to chat
     if (hasRunningInstance(modelId)) {
-      setSelectedChatModel(modelId);
       if (!skipCreate) createConversation();
       chatLaunchState = "ready";
       return;
@@ -3665,7 +3667,6 @@ SPDX-License-Identifier: Apache-2.0
     }
 
     if (canUseCaiDirectTextChat(modelId)) {
-      setSelectedChatModel(modelId);
       pendingChatModelId = modelId;
       if (!skipCreate) createConversation();
       chatLaunchState = "ready";
@@ -3674,7 +3675,6 @@ SPDX-License-Identifier: Apache-2.0
 
     // Already has an instance (downloading/loading) — attach to its progress
     if (hasExistingInstance(modelId)) {
-      setSelectedChatModel(modelId);
       pendingChatModelId = modelId;
       if (!skipCreate) createConversation();
       const dlStatus = getModelDownloadStatus(modelId);
@@ -3737,7 +3737,6 @@ SPDX-License-Identifier: Apache-2.0
         return;
       }
 
-      setSelectedChatModel(modelId);
       recordRecentLaunch(modelId);
       if (!skipCreate) createConversation();
       chatLaunchState = "downloading";
@@ -3760,7 +3759,7 @@ SPDX-License-Identifier: Apache-2.0
       textContent?: string;
       preview?: string;
     }[],
-  ) {
+  ): Promise<boolean> {
     // Clear forced-idle so restore effect resumes normal operation
     userForcedIdle = false;
 
@@ -3800,8 +3799,7 @@ SPDX-License-Identifier: Apache-2.0
         // Running model is same or better tier — use it directly
         setSelectedChatModel(bestRunning.id);
         if (!chatStarted) createConversation();
-        routeMessage(content, files);
-        return;
+        return routeMessage(content, files);
       }
     }
 
@@ -3810,15 +3808,14 @@ SPDX-License-Identifier: Apache-2.0
         type: "error",
         message: tr("No model fits in your available memory"),
       });
-      return;
+      return false;
     }
 
     // Check if the chosen auto model is already running
     if (hasRunningInstance(autoModel.id)) {
       setSelectedChatModel(autoModel.id);
       if (!chatStarted) createConversation();
-      routeMessage(content, files);
-      return;
+      return routeMessage(content, files);
     }
 
     const walletAccessPrompt = getCaiWalletAccessPrompt(
@@ -3827,15 +3824,14 @@ SPDX-License-Identifier: Apache-2.0
     );
     if (walletAccessPrompt) {
       showWalletAccessPrompt(walletAccessPrompt);
-      return;
+      return false;
     }
 
     if (canUseCaiDirectTextChat(autoModel.id, files)) {
       setSelectedChatModel(autoModel.id);
       if (!chatStarted) createConversation();
       chatLaunchState = "ready";
-      routeMessage(content, files);
-      return;
+      return routeMessage(content, files);
     }
 
     // Already has an instance (downloading/loading) — attach to its progress
@@ -3851,7 +3847,7 @@ SPDX-License-Identifier: Apache-2.0
       } else {
         chatLaunchState = "launching";
       }
-      return;
+      return true;
     }
 
     // Need to launch first, then send
@@ -3871,7 +3867,7 @@ SPDX-License-Identifier: Apache-2.0
           }),
         });
         chatLaunchState = "idle";
-        return;
+        return false;
       }
       const data: { previews: PlacementPreview[] } = await res.json();
       const placement = pickOptimalPlacement(data.previews);
@@ -3883,11 +3879,11 @@ SPDX-License-Identifier: Apache-2.0
         if (walletAccessPrompt) {
           showWalletAccessPrompt(walletAccessPrompt);
           chatLaunchState = "idle";
-          return;
+          return false;
         }
         addToast({ type: "error", message: tr("No valid placement found") });
         chatLaunchState = "idle";
-        return;
+        return false;
       }
 
       const launchRes = await fetch("/instance", {
@@ -3903,7 +3899,7 @@ SPDX-License-Identifier: Apache-2.0
           }),
         });
         chatLaunchState = "idle";
-        return;
+        return false;
       }
 
       setSelectedChatModel(autoModel.id);
@@ -3913,12 +3909,14 @@ SPDX-License-Identifier: Apache-2.0
 
       // Queue the message to send once model is ready
       pendingAutoMessage = { content, files };
+      return true;
     } catch (error) {
       addToast({
         type: "error",
         message: trf("Network error: {error}", { error: String(error) }),
       });
       chatLaunchState = "idle";
+      return false;
     }
   }
 
@@ -4083,7 +4081,7 @@ SPDX-License-Identifier: Apache-2.0
       textContent?: string;
       preview?: string;
     }[],
-  ) {
+  ): boolean {
     const selectedModel = selectedChatModel();
     let model = selectedModel;
     if (selectedModel) {
@@ -4099,16 +4097,20 @@ SPDX-License-Identifier: Apache-2.0
     }
 
     // Model is selected and running — send directly
+    const walletAccessPrompt = getCaiWalletAccessPrompt(model, files);
+    if (walletAccessPrompt) {
+      showWalletAccessPrompt(walletAccessPrompt);
+      return false;
+    }
+
     if (model && hasRunningInstance(model)) {
       chatLaunchState = "ready";
-      routeMessage(content, files);
-      return;
+      return routeMessage(content, files);
     }
 
     if (model && canUseCaiDirectTextChat(model, files)) {
       chatLaunchState = "ready";
-      routeMessage(content, files);
-      return;
+      return routeMessage(content, files);
     }
 
     // Model is selected but NOT running — launch it, queue the message
@@ -4116,11 +4118,12 @@ SPDX-License-Identifier: Apache-2.0
       pendingAutoMessage = { content, files };
       userForcedIdle = false;
       launchModelForChat(model, "picker", messages().length > 0, files);
-      return;
+      return true;
     }
 
     // No model selected — fall through to auto-pick
-    handleAutoSend(content, files);
+    void handleAutoSend(content, files);
+    return true;
   }
 
   // Helper to get the number of nodes in a placement preview

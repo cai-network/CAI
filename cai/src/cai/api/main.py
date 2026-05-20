@@ -2259,6 +2259,8 @@ class API:
             state_url=f"{base_url}/state",
             cai_url=base_url,
             execution_cai_url=self._resolve_execution_cai_url(),
+            state_payload_loader=self._state_payload_with_current_local_identity,
+            local_node_id=str(self.node_id),
         )
 
     def get_cai_history(
@@ -2943,6 +2945,7 @@ class API:
             state_url=f"{base_url}/state",
             cai_url=base_url,
             execution_cai_url=self._resolve_execution_cai_url(),
+            state_payload_loader=self._state_payload_with_current_local_identity,
             local_node_id=str(self.node_id),
         )
 
@@ -5928,4 +5931,3 @@ class API:
         ONBOARDING_COMPLETE_FILE.parent.mkdir(parents=True, exist_ok=True)
         ONBOARDING_COMPLETE_FILE.write_text("true")
         return JSONResponse({"completed": True})
-
