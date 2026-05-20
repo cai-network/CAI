@@ -1027,6 +1027,9 @@ def _worker_verification_status(
         return False, "node capability signer address is missing"
     if signer_address != reward_address:
         return False, "node capability signer does not match worker reward address"
+    public_key_address = str(record.payload_public_key_address or "").strip().lower()
+    if public_key_address and public_key_address != reward_address:
+        return False, "node capability public key does not match worker reward address"
 
     # The peer payload is signed by the worker reward wallet. The node public key is
     # the transport identity and normally differs from the wallet key.

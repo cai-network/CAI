@@ -8,6 +8,7 @@ from typing import Any
 
 from .model import MoneyPolicy, WalletPolicy, resolve_active_chain_network
 from .wallet_signing import (
+    DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
     SIGNING_SCHEME_ML_DSA_65,
     address_from_public_key_b64,
     decode_bytes,
@@ -159,6 +160,7 @@ def sign_peer_payload(
         public_key_address = hybrid_address_from_public_keys_b64(
             ed25519_public_key_b64=normalized_public_key,
             pq_public_key_b64=normalized_pq_public_key,
+            address_scheme=DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
         )
         pq_signature_b64 = sign_payload_mldsa65_b64(
             normalized_pq_private_key,
@@ -222,12 +224,19 @@ def verify_peer_payload_signature(
             pq_signature_b64 = str(signature.get("pq_signature_b64") or "").strip()
             if not pq_public_key_b64 or not pq_signature_b64:
                 return False, f"{payload_name} payload hybrid signature is incomplete"
-            expected_public_key_address = hybrid_address_from_public_keys_b64(
-                ed25519_public_key_b64=public_key_b64,
-                pq_public_key_b64=pq_public_key_b64,
-            )
+            expected_public_key_addresses = {
+                hybrid_address_from_public_keys_b64(
+                    ed25519_public_key_b64=public_key_b64,
+                    pq_public_key_b64=pq_public_key_b64,
+                ),
+                hybrid_address_from_public_keys_b64(
+                    ed25519_public_key_b64=public_key_b64,
+                    pq_public_key_b64=pq_public_key_b64,
+                    address_scheme=DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
+                ),
+            }
         else:
-            expected_public_key_address = address_from_public_key_b64(public_key_b64)
+            expected_public_key_addresses = {address_from_public_key_b64(public_key_b64)}
     except Exception:
         return False, f"{payload_name} payload signature public key is invalid"
     declared_public_key_address = str(
@@ -235,7 +244,7 @@ def verify_peer_payload_signature(
     ).strip().lower()
     if (
         declared_public_key_address
-        and declared_public_key_address != expected_public_key_address
+        and declared_public_key_address not in expected_public_key_addresses
     ):
         return False, f"{payload_name} payload signature public key address mismatch"
     signing_body = peer_payload_signing_body(payload)

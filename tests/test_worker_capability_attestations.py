@@ -24,6 +24,7 @@ from cai_compute_chain.peer_payload import add_peer_payload_metadata, sign_peer_
 from cai_compute_chain.settlement import list_validator_evidence
 from cai_compute_chain.validators import sync_validator_record
 from cai_compute_chain.wallet_signing import (
+    DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
     address_from_public_key_b64,
     encode_bytes,
     generate_mldsa65_keypair_b64,
@@ -251,6 +252,7 @@ class WorkerCapabilityAttestationTests(unittest.TestCase):
         validator_id = hybrid_address_from_public_keys_b64(
             ed25519_public_key_b64=validator_public_key_b64,
             pq_public_key_b64=validator_pq_public_key_b64,
+            address_scheme=DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
         )
         worker_pq_public_key_b64, worker_pq_private_key_b64 = (
             generate_mldsa65_keypair_b64()
@@ -258,6 +260,7 @@ class WorkerCapabilityAttestationTests(unittest.TestCase):
         worker_hybrid_address = hybrid_address_from_public_keys_b64(
             ed25519_public_key_b64=self.worker_public_key_b64,
             pq_public_key_b64=worker_pq_public_key_b64,
+            address_scheme=DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
         )
         record.worker_reward_address = worker_hybrid_address
         record.node_public_key_address = worker_hybrid_address

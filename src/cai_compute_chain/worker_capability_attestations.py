@@ -22,6 +22,7 @@ from .peer_payload import (
 from .validators import get_validator_record
 from .wallet import data_root, normalize_address
 from .wallet_signing import (
+    DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
     SIGNING_SCHEME_HYBRID_ED25519_ML_DSA_65,
     SIGNING_SCHEME_ML_DSA_65,
     SIGNING_SCHEME_ED25519,
@@ -160,6 +161,7 @@ def _identity_address_from_public_keys(
         return hybrid_address_from_public_keys_b64(
             ed25519_public_key_b64=normalized_public_key,
             pq_public_key_b64=normalized_pq_public_key,
+            address_scheme=DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME,
         )
     return address_from_public_key_b64(normalized_public_key)
 
@@ -1149,7 +1151,7 @@ def _record_text(record: Any, field_name: str) -> str:
 
 
 def _record_worker_public_key_address(record: Any) -> str | None:
-    for field_name in ("node_public_key_address", "payload_public_key_address"):
+    for field_name in ("payload_public_key_address", "node_public_key_address"):
         value = _record_text(record, field_name)
         if value:
             return normalize_address(value)
