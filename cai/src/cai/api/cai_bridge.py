@@ -4566,6 +4566,11 @@ def _prepare_record_for_worker_challenge(
         worker_key_address = modules.wallet_signing.hybrid_address_from_public_keys_b64(
             ed25519_public_key_b64=public_key_b64,
             pq_public_key_b64=pq_public_key_b64,
+            address_scheme=getattr(
+                modules.wallet_signing,
+                "DEFAULT_WALLET_HYBRID_ADDRESS_SCHEME",
+                "hybrid-ed25519-ml-dsa-65-sha256-256-v1",
+            ),
         )
     else:
         worker_key_address = modules.wallet_signing.address_from_public_key_b64(
