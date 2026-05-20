@@ -55,13 +55,3 @@ The base alpha model uses:
 
 The market path for `CAICN/USDT` is part of the broader network direction so users and executors can buy, sell, and evaluate the token more conveniently.
 
-## Public release readiness
-
-The project is ready for broader public attention when:
-
-- two or more physical machines can complete distributed inference reliably;
-- validator settlement works without becoming a data-plane bottleneck;
-- updates work predictably during normal app usage;
-- chain recovery from snapshots is tested;
-- sensitive paths have security review;
-- repository rules protect `main` while keeping pull requests open to contributors.
