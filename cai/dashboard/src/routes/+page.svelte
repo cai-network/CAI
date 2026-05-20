@@ -1361,6 +1361,20 @@ SPDX-License-Identifier: Apache-2.0
     return ids;
   }
 
+  function canRouteCaiDirectTextModel(
+    modelId: string | null | undefined,
+  ): boolean {
+    const normalizedModelId = modelId?.trim() || "";
+    if (!normalizedModelId) {
+      return false;
+    }
+    const compatibleModelIds = getWorkerCompatibleTextModelIds();
+    return (
+      compatibleModelIds.size > 0 &&
+      compatibleModelIds.has(normalizedModelId)
+    );
+  }
+
   function resolveStableTextChatModelSelection(
     modelId: string | null | undefined,
     files?: {
@@ -1408,7 +1422,7 @@ SPDX-License-Identifier: Apache-2.0
       }
       return requestedModelId;
     }
-    return networkDefaultModelId || executionModelId || requestedModelId;
+    return requestedModelId;
   }
 
   function resolvePreferredAutoModel(
@@ -1458,6 +1472,7 @@ SPDX-License-Identifier: Apache-2.0
     }[],
   ): string | null {
     if (!isCaiDirectTextChatCandidate(modelId, files)) return null;
+    if (!canRouteCaiDirectTextModel(modelId)) return null;
     if (!caiData?.available) return null;
     if (!caiData.wallet?.has_active_wallet) {
       return t("error.walletCreate");
@@ -1481,7 +1496,8 @@ SPDX-License-Identifier: Apache-2.0
     const resolvedModelId = resolveStableTextChatModelSelection(modelId, files);
     if (
       !resolvedModelId ||
-      !isCaiDirectTextChatCandidate(resolvedModelId, files)
+      !isCaiDirectTextChatCandidate(resolvedModelId, files) ||
+      !canRouteCaiDirectTextModel(resolvedModelId)
     ) {
       return false;
     }

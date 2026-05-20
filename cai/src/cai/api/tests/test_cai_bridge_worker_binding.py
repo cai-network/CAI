@@ -4,6 +4,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from cai_compute_chain import model as model_module
 from cai_compute_chain import peer_payload as peer_payload_module
 from cai_compute_chain.decentralized_compute import (
     CAI_OWNED_TRANSPORT_PROTOCOL,
@@ -491,6 +492,53 @@ def test_chat_completion_normalizes_execution_alias_to_private_network_model() -
         (
             "cai-network/Qwen3-0.6B-GGUF",
             "cai-network/Qwen3-0.6B-GGUF",
+        )
+    ]
+
+
+def test_chat_completion_preserves_explicit_non_default_model_selection() -> None:
+    calls: list[tuple[str, str]] = []
+
+    service = object.__new__(CaiBridgeService)
+    service.state_url = "http://127.0.0.1:52415/state"
+    service.cai_url = "http://127.0.0.1:52415"
+    service.execution_cai_url = "http://127.0.0.1:52415"
+    service.local_node_id = "node-local"
+    service.wallet_policy = object()
+    service.money_policy = object()
+    service.network_model_policy = SimpleNamespace(
+        network_default_model_id="cai-network/Qwen3-0.6B-GGUF",
+        network_default_execution_model_id="Qwen/Qwen3-0.6B-GGUF",
+    )
+    service.modules = SimpleNamespace(
+        model=model_module,
+        jobs=SimpleNamespace(
+            create_job_intent=lambda **kwargs: calls.append(
+                (
+                    kwargs["model_id"],
+                    kwargs["request_payload_preview"]["model"],
+                )
+            )
+            or SimpleNamespace(job_id="job-1"),
+            execute_job_intent=lambda *args, **kwargs: (
+                SimpleNamespace(job_id="job-1"),
+                SimpleNamespace(raw_response={"id": "resp-1"}),
+            ),
+        ),
+    )
+    service._ensure_local_worker_reward_binding = lambda: None  # pyright: ignore[method-assign]
+
+    service.chat_completion(
+        {
+            "model": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            "messages": [{"role": "user", "content": "2+3=?"}],
+        }
+    )
+
+    assert calls == [
+        (
+            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
         )
     ]
 
@@ -2129,4 +2177,3 @@ def test_chunk_payload_rejects_private_package_bytes() -> None:
         assert "disabled for non-public package private@v1" in str(exc)
     else:
         raise AssertionError("Expected private package chunk payload to be blocked.")
-

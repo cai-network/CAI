@@ -469,9 +469,29 @@ class CaiBridgeService:
         return self._sign_peer_payload(payload)
 
     def sync_chain(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_chain = (
+            payload.get("chain")
+            if isinstance(payload, dict) and isinstance(payload.get("chain"), dict)
+            else payload
+        )
         if isinstance(payload, dict):
+            has_root_network_metadata = any(
+                str(payload.get(key) or "").strip()
+                for key in (
+                    "network",
+                    "chain_network",
+                    "chainNetwork",
+                    "chain_id",
+                    "chainId",
+                )
+            )
+            network_payload = (
+                payload
+                if has_root_network_metadata or not isinstance(raw_chain, dict)
+                else raw_chain
+            )
             self.modules.peer_payload.validate_peer_payload_network(
-                payload,
+                network_payload,
                 policy=self.wallet_policy,
                 payload_name="chain sync",
             )
@@ -488,11 +508,6 @@ class CaiBridgeService:
                 raise ValueError(
                     signature_error or "Invalid chain sync payload signature."
                 )
-        raw_chain = (
-            payload.get("chain")
-            if isinstance(payload, dict) and isinstance(payload.get("chain"), dict)
-            else payload
-        )
         if isinstance(raw_chain, dict):
             self.modules.peer_payload.validate_peer_payload_network(
                 raw_chain,

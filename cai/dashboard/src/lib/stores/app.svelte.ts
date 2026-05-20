@@ -2972,7 +2972,7 @@ class AppStore {
       }
       return requestedModelId;
     }
-    return networkDefaultModelId || executionModelId || requestedModelId;
+    return requestedModelId;
   }
 
   private getModelForRequest(modelId?: string): string | null {
