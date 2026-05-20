@@ -15,7 +15,11 @@ from cai.shared.types.events import NodeDownloadProgress, TaskCreated, TaskStatu
 from cai.shared.types.memory import Memory
 from cai.shared.types.state import State
 from cai.shared.types.tasks import DownloadModel, TaskStatus
-from cai.shared.types.worker.downloads import DownloadCompleted, DownloadFailed
+from cai.shared.types.worker.downloads import (
+    DownloadCompleted,
+    DownloadFailed,
+    DownloadPending,
+)
 from cai.shared.types.worker.instances import InstanceId, MlxRingInstance
 from cai.shared.types.worker.runners import RunnerId, ShardAssignments
 from cai.shared.types.worker.shards import PipelineShardMetadata
@@ -339,6 +343,131 @@ def test_try_prepare_chunk_backed_llama_cpp_download_imports_remote_manifest() -
     ]
 
 
+def test_try_prepare_chunk_backed_llama_cpp_download_auto_generates_hf_manifest(
+    monkeypatch,
+) -> None:
+    @dataclass(frozen=True)
+    class FakeAssignment:
+        start_layer: int
+        end_layer: int
+        device_rank: int = 0
+        world_size: int = 1
+        node_id: str | None = None
+
+    fake_manifest = SimpleNamespace(catalog_id="demo", version="sha123")
+    fake_materialized = SimpleNamespace(output_path=str(Path("D:/tmp/partial.gguf")))
+    build_calls: list[dict[str, object]] = []
+    saved_manifests: list[object] = []
+
+    class FakeModelDistributionModule:
+        ModelShardAssignment = FakeAssignment
+
+        @staticmethod
+        def select_model_package_manifest_for_model(model_id: str):
+            assert model_id == "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+            return None
+
+        @staticmethod
+        def build_hf_gguf_model_package_manifest(**kwargs):
+            build_calls.append(kwargs)
+            return fake_manifest
+
+        @staticmethod
+        def save_model_package_manifest(manifest):
+            saved_manifests.append(manifest)
+            return Path("D:/tmp/manifest.json")
+
+        @staticmethod
+        def ensure_assignment_ready_from_store(
+            manifest,
+            assignment,
+            *,
+            use_imported_peer_inventory: bool,
+            use_imported_seed_inventory: bool,
+        ):
+            assert manifest is fake_manifest
+            assert assignment.node_id == "node-a"
+            assert use_imported_peer_inventory is True
+            assert use_imported_seed_inventory is True
+            return SimpleNamespace(ready=True)
+
+        @staticmethod
+        def materialize_default_assignment_artifact_from_store(manifest, assignment):
+            assert manifest is fake_manifest
+            return fake_materialized
+
+        @staticmethod
+        def remember_recent_shard_hints(node_id, hints):
+            return SimpleNamespace(
+                hints_received=len(hints),
+                records_upserted=len(hints),
+                records_pruned=0,
+                stored_records=len(hints),
+            )
+
+        @staticmethod
+        def sync_chunk_inventory_from_cai_peers(
+            *,
+            state_payload,
+            CAI_url: str,
+            source_kind: str,
+            prune_missing_peers: bool,
+        ):
+            return SimpleNamespace(imported_payloads=0)
+
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "cai_compute_chain.model_distribution":
+            return FakeModelDistributionModule
+        return real_import_module(name)
+
+    monkeypatch.delenv("CAI_DISABLE_HF_MODEL_PACKAGE_AUTOGENERATION", raising=False)
+    monkeypatch.setenv("CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_MAX_BYTES", "999999")
+    shard = PipelineShardMetadata(
+        model_card=ModelCard(
+            model_id=ModelId("Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+            storage_size=Memory.from_mb(1),
+            n_layers=24,
+            hidden_size=1,
+            supports_tensor=False,
+            tasks=[ModelTask.TextGeneration],
+            inference_backend=InferenceBackend.LlamaCpp,
+            preferred_filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            model_package_version="sha123",
+            family="qwen2",
+            quantization="Q4_K_M",
+        ),
+        device_rank=0,
+        world_size=1,
+        start_layer=0,
+        end_layer=24,
+        n_layers=24,
+    )
+
+    with patch("cai.worker.main.importlib.import_module", fake_import_module), patch(
+        "cai.worker.main.set_custom_model_local_path",
+        lambda model_id, local_path: Path(local_path),
+    ), patch("cai.worker.main.urlopen") as urlopen_mock:
+        _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.clear()
+        urlopen_mock.return_value.__enter__.return_value.read.return_value = b'{"nodeIdentities": {}}'
+        completed = _try_prepare_chunk_backed_llama_cpp_download(
+            NodeId("node-a"),
+            shard,
+            api_port=52415,
+        )
+        _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.clear()
+
+    assert completed is not None
+    assert completed.model_directory == fake_materialized.output_path
+    assert saved_manifests == [fake_manifest]
+    assert build_calls[0]["model_id"] == "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    assert build_calls[0]["version"] == "sha123"
+    assert build_calls[0]["preferred_filename"] == "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    assert build_calls[0]["total_layers"] == 24
+    assert build_calls[0]["cache_downloaded_chunks"] is True
+
+
 def test_try_prepare_chunk_backed_llama_cpp_download_returns_failed_when_not_ready() -> None:
     @dataclass(frozen=True)
     class FakeAssignment:
@@ -497,11 +626,15 @@ def test_download_model_prefers_chunk_backed_manifest_over_existing_full_path() 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(worker.plan_step)
                 created = await event_recv.receive()
+                preparing = await event_recv.receive()
                 progress = await event_recv.receive()
                 status = await event_recv.receive()
                 tg.cancel_scope.cancel()
 
         assert isinstance(created, TaskCreated)
+        assert isinstance(preparing, NodeDownloadProgress)
+        assert isinstance(preparing.download_progress, DownloadPending)
+        assert preparing.download_progress.status_message == "Preparing chunk manifest"
         assert isinstance(progress, NodeDownloadProgress)
         assert progress.download_progress is chunk_backed_completed
         assert isinstance(status, TaskStatusUpdated)
@@ -1158,4 +1291,3 @@ def test_release_chunk_backed_assignment_cache_cleans_last_materialized_model_pa
 
     assert released is True
     assert deleted_model_ids == [ModelId("Qwen/Qwen3-0.6B-GGUF")]
-

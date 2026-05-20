@@ -30,6 +30,7 @@ class BaseDownloadProgress(TaggedModel):
     node_id: NodeId
     shard_metadata: ShardMetadata
     model_directory: str = ""
+    status_message: str = ""
 
 
 class DownloadPending(BaseDownloadProgress):

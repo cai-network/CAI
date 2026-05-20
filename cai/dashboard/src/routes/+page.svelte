@@ -2432,6 +2432,7 @@ SPDX-License-Identifier: Apache-2.0
     status: "completed" | "partial" | "pending" | "downloading";
     percentage: number;
     progress: DownloadProgress | null;
+    statusMessage?: string | null;
   };
 
   // Shared helper: collect per-node download status for a model across a set of nodes.
@@ -2535,6 +2536,10 @@ SPDX-License-Identifier: Apache-2.0
             status: pendingDownloaded > 0 ? "partial" : "pending",
             percentage: pct,
             progress: null,
+            statusMessage:
+              (downloadPayload.statusMessage as string) ||
+              (downloadPayload.status_message as string) ||
+              null,
           });
           continue;
         }

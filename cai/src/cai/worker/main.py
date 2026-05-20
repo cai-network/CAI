@@ -67,7 +67,11 @@ from cai.shared.types.tasks import (
 )
 from cai.shared.types.text_generation import Base64Image, Base64ImageHash
 from cai.shared.types.topology import Connection, SocketConnection
-from cai.shared.types.worker.downloads import DownloadCompleted, DownloadFailed
+from cai.shared.types.worker.downloads import (
+    DownloadCompleted,
+    DownloadFailed,
+    DownloadPending,
+)
 from cai.shared.types.worker.instances import InstanceId
 from cai.shared.types.worker.runners import RunnerId
 from cai.utils.channels import Receiver, Sender, channel
@@ -81,6 +85,18 @@ from cai.worker.runner.runner_supervisor import RunnerSupervisor
 
 CAI_CHUNK_SEED_URLS_ENV = "CAI_CHUNK_SEED_URLS"
 CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY_ENV = "CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY"
+CAI_DISABLE_HF_MODEL_PACKAGE_AUTOGENERATION_ENV = (
+    "CAI_DISABLE_HF_MODEL_PACKAGE_AUTOGENERATION"
+)
+CAI_HF_MODEL_PACKAGE_AUTOGENERATE_TIMEOUT_SECONDS_ENV = (
+    "CAI_HF_MODEL_PACKAGE_AUTOGENERATE_TIMEOUT_SECONDS"
+)
+CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_CHUNKS_ENV = (
+    "CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_CHUNKS"
+)
+CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_MAX_BYTES_ENV = (
+    "CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_MAX_BYTES"
+)
 _CAI_OWNED_TRANSPORT_FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS: set[tuple[str, str, str]] = set()
 
@@ -594,6 +610,78 @@ def _prefetch_chunk_backed_recent_shard_hints(
         return None
 
 
+def _model_card_storage_bytes(model_card) -> int:
+    storage_size = getattr(model_card, "storage_size", None)
+    try:
+        return max(0, int(getattr(storage_size, "in_bytes", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _auto_generate_hf_model_package_manifest(
+    model_distribution,
+    shard,
+    *,
+    model_id: str,
+    preferred_filename: str,
+    source_revision: str,
+) -> object | None:
+    if _env_bool(CAI_DISABLE_HF_MODEL_PACKAGE_AUTOGENERATION_ENV, False):
+        return None
+
+    attempt_key = (model_id, preferred_filename, "hf-autogenerate")
+    if attempt_key in _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS:
+        return None
+    _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.add(attempt_key)
+
+    builder = getattr(model_distribution, "build_hf_gguf_model_package_manifest", None)
+    saver = getattr(model_distribution, "save_model_package_manifest", None)
+    if not callable(builder) or not callable(saver):
+        return None
+
+    storage_bytes = _model_card_storage_bytes(shard.model_card)
+    cache_chunks = _env_bool(
+        CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_CHUNKS_ENV,
+        True,
+    )
+    cache_max_bytes = _env_int(
+        CAI_HF_MODEL_PACKAGE_AUTOGENERATE_CACHE_MAX_BYTES_ENV,
+        6 * 1024 * 1024 * 1024,
+    )
+    if storage_bytes > 0 and storage_bytes > cache_max_bytes:
+        cache_chunks = False
+
+    try:
+        logger.info(
+            "Auto-generating CAI model package manifest for {}{}",
+            model_id,
+            f" ({preferred_filename})" if preferred_filename else "",
+        )
+        manifest = builder(
+            model_id=model_id,
+            version=source_revision,
+            preferred_filename=preferred_filename or None,
+            source_revision=source_revision,
+            total_layers=int(getattr(shard.model_card, "n_layers", 0) or 0) or None,
+            family=str(getattr(shard.model_card, "family", "") or ""),
+            quantization=str(getattr(shard.model_card, "quantization", "") or ""),
+            timeout_sec=_env_int(
+                CAI_HF_MODEL_PACKAGE_AUTOGENERATE_TIMEOUT_SECONDS_ENV,
+                30,
+            ),
+            cache_downloaded_chunks=cache_chunks,
+        )
+        saver(manifest)
+        return manifest
+    except Exception as exc:
+        logger.warning(
+            "Failed to auto-generate CAI model package manifest for {}: {}",
+            model_id,
+            exc,
+        )
+        return None
+
+
 def _select_or_import_chunk_backed_manifest(
     model_distribution,
     shard,
@@ -638,34 +726,39 @@ def _select_or_import_chunk_backed_manifest(
                         exc,
                     )
 
-    if _env_bool(CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY_ENV, False):
-        return None
+    if not _env_bool(CAI_DISABLE_HF_MODEL_PACKAGE_DISCOVERY_ENV, False):
+        attempt_key = (model_id, preferred_filename, "hf-discovery")
+        if attempt_key not in _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS:
+            _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.add(attempt_key)
+            discoverer = getattr(
+                model_distribution,
+                "discover_and_import_hf_model_package_manifest",
+                None,
+            )
+            if callable(discoverer):
+                try:
+                    discovered = discoverer(
+                        model_id,
+                        preferred_filename=preferred_filename or None,
+                        source_revision=source_revision,
+                        timeout_sec=5,
+                    )
+                    if discovered is not None:
+                        return discovered
+                except Exception as exc:
+                    logger.debug(
+                        "No importable CAI model package manifest discovered for {}: {}",
+                        model_id,
+                        exc,
+                    )
 
-    attempt_key = (model_id, preferred_filename, "hf-discovery")
-    if attempt_key in _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS:
-        return None
-    _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.add(attempt_key)
-    discoverer = getattr(
+    return _auto_generate_hf_model_package_manifest(
         model_distribution,
-        "discover_and_import_hf_model_package_manifest",
-        None,
+        shard,
+        model_id=model_id,
+        preferred_filename=preferred_filename,
+        source_revision=source_revision,
     )
-    if not callable(discoverer):
-        return None
-    try:
-        return discoverer(
-            model_id,
-            preferred_filename=preferred_filename or None,
-            source_revision=source_revision,
-            timeout_sec=5,
-        )
-    except Exception as exc:
-        logger.debug(
-            "No importable CAI model package manifest discovered for {}: {}",
-            model_id,
-            exc,
-        )
-        return None
 
 
 def _try_prepare_chunk_backed_llama_cpp_download(
@@ -684,14 +777,14 @@ def _try_prepare_chunk_backed_llama_cpp_download(
     except Exception:
         return None
 
+    _sync_chunk_backed_peer_inventories(api_port=api_port)
+    _sync_chunk_backed_seed_inventories()
     manifest = _select_or_import_chunk_backed_manifest(model_distribution, shard)
     if manifest is None:
         return None
 
     try:
         _remember_chunk_backed_local_shard_hints(node_id, [shard])
-        _sync_chunk_backed_peer_inventories(api_port=api_port)
-        _sync_chunk_backed_seed_inventories()
 
         assignment = model_distribution.ModelShardAssignment(
             start_layer=shard.start_layer,
@@ -1000,6 +1093,18 @@ class Worker:
                 case DownloadModel(shard_metadata=shard):
                     model_id = shard.model_card.model_id
                     self._download_backoff.record_attempt(model_id)
+
+                    if shard.model_card.inference_backend == InferenceBackend.LlamaCpp:
+                        await self.event_sender.send(
+                            NodeDownloadProgress(
+                                download_progress=DownloadPending(
+                                    node_id=self.node_id,
+                                    shard_metadata=shard,
+                                    status_message="Preparing chunk manifest",
+                                    total=shard.model_card.storage_size,
+                                )
+                            )
+                        )
 
                     chunk_backed_download = await to_thread.run_sync(
                         lambda: _try_prepare_chunk_backed_llama_cpp_download(
@@ -1533,4 +1638,3 @@ class Worker:
             except Exception:
                 logger.exception("CAI-owned transport shard runtime loop iteration failed")
                 await anyio.sleep(error_sleep)
-

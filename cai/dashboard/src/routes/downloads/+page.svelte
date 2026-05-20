@@ -41,6 +41,7 @@ SPDX-License-Identifier: Apache-2.0
         downloaded: number;
         total: number;
         modelDirectory?: string;
+        statusMessage?: string;
       }
     | { kind: "failed"; modelDirectory?: string }
     | { kind: "not_present" };
@@ -240,6 +241,9 @@ SPDX-License-Identifier: Apache-2.0
           const modelDirectory =
             ((payload.model_directory ?? payload.modelDirectory) as string) ||
             undefined;
+          const statusMessage =
+            ((payload.status_message ?? payload.statusMessage) as string) ||
+            undefined;
           let cell: CellStatus;
           if (tag === "DownloadCompleted") {
             const totalBytes = getBytes(payload.total);
@@ -280,6 +284,7 @@ SPDX-License-Identifier: Apache-2.0
               downloaded,
               total,
               modelDirectory,
+              statusMessage,
             };
           }
 
@@ -839,7 +844,11 @@ SPDX-License-Identifier: Apache-2.0
                       ({clampPercent(cellStatus.percentage).toFixed(0)}%)
                     {/if}
                   </span>
-                  {#if "modelDirectory" in cellStatus && cellStatus.modelDirectory}
+                  {#if "statusMessage" in cellStatus && cellStatus.statusMessage}
+                    <span class="text-[9px] text-white/30 break-all pl-1">
+                      {tr(cellStatus.statusMessage)}
+                    </span>
+                  {:else if "modelDirectory" in cellStatus && cellStatus.modelDirectory}
                     <span
                       class="text-[9px] text-white/30 break-all pl-1"
                       title={cellStatus.modelDirectory}

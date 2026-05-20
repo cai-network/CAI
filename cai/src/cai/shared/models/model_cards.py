@@ -428,7 +428,7 @@ def _build_hf_gguf_model_card(model_id: ModelId, info: Any) -> "ModelCard":
             else None
         ),
         model_package_catalog_id=str(model_id).replace("/", "--") if manifest_path else None,
-        model_package_version=revision if manifest_path else None,
+        model_package_version=revision,
     )
 
 

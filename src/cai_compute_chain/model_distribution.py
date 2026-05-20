@@ -362,6 +362,7 @@ class ChunkInventoryPayload:
     published_at: str
     records: tuple[ChunkInventoryRecord, ...]
     endpoint_base_url: str | None = None
+    manifests: tuple["ModelPackageManifest", ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -379,6 +380,7 @@ class ChunkInventoryPayload:
                 }
                 for record in self.records
             ],
+            "manifests": [manifest.to_dict() for manifest in self.manifests],
         }
 
     @classmethod
@@ -401,6 +403,11 @@ class ChunkInventoryPayload:
                     total_bytes=int(item["total_bytes"]),
                 )
                 for item in payload.get("records", [])
+            ),
+            manifests=tuple(
+                ModelPackageManifest.from_dict(item)
+                for item in payload.get("manifests", [])
+                if isinstance(item, dict)
             ),
         )
 
@@ -3230,12 +3237,24 @@ def build_local_chunk_inventory_payload(
             )
         )
 
+    manifests: list[ModelPackageManifest] = []
+    try:
+        manifests = [
+            manifest
+            for manifest in list_model_package_manifests(policy)
+            if str(getattr(manifest, "package_kind", ""))
+            != str(ModelPackageKind.PRIVATE_CURATED)
+        ]
+    except Exception:
+        manifests = []
+
     return ChunkInventoryPayload(
         source_id=source_id,
         source_kind=source_kind,
         published_at=_now_iso(),
         endpoint_base_url=str(endpoint_base_url).strip().rstrip("/") if endpoint_base_url else None,
         records=tuple(records),
+        manifests=tuple(manifests),
     )
 
 
@@ -3295,6 +3314,10 @@ def import_chunk_inventory_payload(
     payload: ChunkInventoryPayload,
     policy: WalletPolicy | None = None,
 ) -> Path:
+    for manifest in payload.manifests:
+        if str(getattr(manifest, "package_kind", "")) == str(ModelPackageKind.PRIVATE_CURATED):
+            continue
+        save_model_package_manifest(manifest, policy)
     return save_chunk_inventory_payload(
         payload,
         imported_chunk_inventory_path(payload.source_id, payload.source_kind, policy),
@@ -3493,6 +3516,7 @@ def sync_chunk_inventory_from_urls(
                         published_at=payload.published_at,
                         endpoint_base_url=f"{parsed.scheme}://{parsed.netloc}",
                         records=payload.records,
+                        manifests=payload.manifests,
                     )
             import_chunk_inventory_payload(payload, policy)
             imported_payloads += 1
@@ -4354,6 +4378,9 @@ def build_hf_gguf_model_package_manifest(
     family: str = "",
     quantization: str = "",
     timeout_sec: int = 30,
+    cache_downloaded_chunks: bool = False,
+    pin_cached_chunks: bool = False,
+    cache_policy: WalletPolicy | None = None,
 ) -> ModelPackageManifest:
     info = _fetch_hf_model_info(
         model_id,
@@ -4386,6 +4413,7 @@ def build_hf_gguf_model_package_manifest(
             "total_layers must be positive or discoverable from Hugging Face GGUF metadata."
         )
 
+    resolved_catalog_id = catalog_id or str(model_id).replace("/", "--")
     artifact = SourceArtifact(
         artifact_id="gguf-main",
         relative_path=artifact_filename,
@@ -4417,6 +4445,11 @@ def build_hf_gguf_model_package_manifest(
         revision=resolved_source_revision,
         preferred_chunk_size=preferred_chunk_size,
         timeout_sec=timeout_sec,
+        cache_catalog_id=resolved_catalog_id,
+        cache_version=version,
+        cache_downloaded_chunks=cache_downloaded_chunks,
+        pin_cached_chunks=pin_cached_chunks,
+        cache_policy=cache_policy,
     )
     if not chunks:
         raise ValueError(
@@ -4430,7 +4463,7 @@ def build_hf_gguf_model_package_manifest(
         allow_full_model_local=str(package_kind) == str(ModelPackageKind.PUBLIC_SHARED),
     )
     manifest = ModelPackageManifest(
-        catalog_id=(catalog_id or str(model_id).replace("/", "--")),
+        catalog_id=resolved_catalog_id,
         model_id=model_id,
         version=version,
         backend=backend,
@@ -4568,6 +4601,11 @@ def _build_remote_gguf_weight_chunks_for_artifact(
     revision: str | None,
     preferred_chunk_size: int,
     timeout_sec: int,
+    cache_catalog_id: str | None = None,
+    cache_version: str | None = None,
+    cache_downloaded_chunks: bool = False,
+    pin_cached_chunks: bool = False,
+    cache_policy: WalletPolicy | None = None,
 ) -> list[ModelChunk]:
     chunks: list[ModelChunk] = []
     current_spans: list[GgufTensorSpan] = []
@@ -4585,6 +4623,11 @@ def _build_remote_gguf_weight_chunks_for_artifact(
                 start_offset=current_start,
                 spans=current_spans,
                 timeout_sec=timeout_sec,
+                cache_catalog_id=cache_catalog_id,
+                cache_version=cache_version,
+                cache_downloaded_chunks=cache_downloaded_chunks,
+                pin_cached_chunks=pin_cached_chunks,
+                cache_policy=cache_policy,
             )
         )
         current_spans = []
@@ -4622,6 +4665,11 @@ def _build_remote_model_chunk_from_gguf_spans(
     start_offset: int,
     spans: list[GgufTensorSpan],
     timeout_sec: int,
+    cache_catalog_id: str | None = None,
+    cache_version: str | None = None,
+    cache_downloaded_chunks: bool = False,
+    pin_cached_chunks: bool = False,
+    cache_policy: WalletPolicy | None = None,
 ) -> ModelChunk:
     end_offset = max(int(spans[-1].end_offset), int(start_offset))
     size_bytes = max(1, end_offset - int(start_offset))
@@ -4639,7 +4687,7 @@ def _build_remote_model_chunk_from_gguf_spans(
         for item in spans
         if item.layer_index is not None
     ]
-    return ModelChunk(
+    chunk = ModelChunk(
         chunk_id=make_chunk_id(
             artifact.artifact_id,
             offset_bytes=int(start_offset),
@@ -4656,6 +4704,20 @@ def _build_remote_model_chunk_from_gguf_spans(
         tensor_names=[str(item.name) for item in spans],
         required_by_default=not layer_indices,
     )
+    if cache_downloaded_chunks and cache_catalog_id and cache_version:
+        put_cached_chunk(
+            catalog_id=cache_catalog_id,
+            version=cache_version,
+            chunk_id=chunk.chunk_id,
+            sha256_hex=chunk.sha256_hex,
+            content=payload,
+            pinned=bool(pin_cached_chunks),
+            cache_class=ChunkCacheClass.HOT
+            if pin_cached_chunks
+            else ChunkCacheClass.WARM,
+            policy=cache_policy,
+        )
+    return chunk
 
 
 def _derive_family_from_model_filename(filename: str) -> str:

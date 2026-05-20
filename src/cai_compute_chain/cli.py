@@ -637,6 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
     model_package_create_hf_gguf_parser.add_argument("--family", default="")
     model_package_create_hf_gguf_parser.add_argument("--quantization", default="")
     model_package_create_hf_gguf_parser.add_argument("--timeout-sec", type=int, default=30)
+    model_package_create_hf_gguf_parser.add_argument("--cache-chunks", action="store_true")
+    model_package_create_hf_gguf_parser.add_argument("--pin-chunks", action="store_true")
     model_package_import_url_parser = subparsers.add_parser(
         "model-package-import-url",
         help="Import a CAI model package manifest from a URL",
@@ -2040,6 +2042,7 @@ def handle_chunk_inventory_local(source_id: str, *, source_kind: str) -> str:
         - source_kind={payload.source_kind}
         - inventory_path={saved_path}
         - manifest_count={len(payload.records)}
+        - package_manifest_count={len(payload.manifests)}
         - chunk_count={sum(record.chunk_count for record in payload.records)}
         - total_bytes={sum(record.total_bytes for record in payload.records)}
         """
@@ -2056,6 +2059,7 @@ def handle_chunk_inventory_import(path: str) -> str:
         - source_kind={payload.source_kind}
         - saved_path={saved_path}
         - manifest_count={len(payload.records)}
+        - package_manifest_count={len(payload.manifests)}
         - chunk_count={sum(record.chunk_count for record in payload.records)}
         - total_bytes={sum(record.total_bytes for record in payload.records)}
         """
@@ -2663,6 +2667,8 @@ def handle_model_package_create_hf_gguf(
     family: str,
     quantization: str,
     timeout_sec: int,
+    cache_chunks: bool,
+    pin_chunks: bool,
 ) -> str:
     manifest = build_hf_gguf_model_package_manifest(
         model_id=model_id,
@@ -2679,6 +2685,8 @@ def handle_model_package_create_hf_gguf(
         family=family,
         quantization=quantization,
         timeout_sec=timeout_sec,
+        cache_downloaded_chunks=cache_chunks,
+        pin_cached_chunks=pin_chunks,
     )
     saved_path = save_model_package_manifest(manifest)
     return dedent(
@@ -2692,6 +2700,7 @@ def handle_model_package_create_hf_gguf(
         - total_size_bytes={manifest.total_size_bytes}
         - chunk_count={len(manifest.chunks)}
         - chunk_size_policy={manifest.chunk_size_policy}
+        - cached_chunks={str(cache_chunks).lower()}
         """
     ).strip()
 
@@ -4468,6 +4477,8 @@ def main() -> None:
                 family=args.family,
                 quantization=args.quantization,
                 timeout_sec=args.timeout_sec,
+                cache_chunks=args.cache_chunks,
+                pin_chunks=args.pin_chunks,
             )
         )
         return

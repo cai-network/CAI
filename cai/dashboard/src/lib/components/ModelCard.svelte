@@ -38,6 +38,7 @@ SPDX-License-Identifier: Apache-2.0
         status: "completed" | "partial" | "pending" | "downloading";
         percentage: number;
         progress: DownloadProgress | null;
+        statusMessage?: string | null;
       }>;
     } | null;
     nodes?: Record<string, NodeInfo>;
@@ -448,6 +449,8 @@ SPDX-License-Identifier: Apache-2.0
                 {Math.round(node.percentage)}% {formatSpeed(
                   node.progress.speed,
                 )}
+              {:else if node.statusMessage}
+                {tr(node.statusMessage)}
               {:else}
                 {node.percentage > 0 ? `${Math.round(node.percentage)}%` : "0%"}
               {/if}

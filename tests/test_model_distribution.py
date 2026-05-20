@@ -1166,6 +1166,36 @@ class ModelDistributionTests(unittest.TestCase):
         self.assertEqual(record_a.total_bytes, 4)
         self.assertEqual(set(record_a.chunk_ids), {"chunk-a1", "chunk-a2"})
 
+    def test_chunk_inventory_payload_exports_and_imports_public_manifests(self) -> None:
+        export_policy = WalletPolicy(
+            wallet_data_dirname=".tmp-model-distribution-inventory-manifest-export"
+        )
+        import_policy = WalletPolicy(
+            wallet_data_dirname=".tmp-model-distribution-inventory-manifest-import"
+        )
+        manifest = _build_manifest()
+        save_model_package_manifest(manifest, export_policy)
+
+        payload = build_local_chunk_inventory_payload(
+            "node-local",
+            source_kind=ChunkInventorySourceKind.LOCAL_CACHE,
+            policy=export_policy,
+        )
+
+        self.assertEqual(len(payload.manifests), 1)
+        self.assertEqual(payload.manifests[0].catalog_id, manifest.catalog_id)
+
+        round_tripped = ChunkInventoryPayload.from_dict(payload.to_dict())
+        import_chunk_inventory_payload(round_tripped, import_policy)
+        imported_manifest = load_model_package_manifest(
+            manifest.catalog_id,
+            manifest.version,
+            import_policy,
+        )
+
+        self.assertEqual(imported_manifest.model_id, manifest.model_id)
+        self.assertEqual(len(imported_manifest.chunks), len(manifest.chunks))
+
     def test_export_and_sync_chunk_inventory_from_cai_peers(self) -> None:
         policy = WalletPolicy(wallet_data_dirname=".tmp-model-distribution-inventory-sync")
         stale_payload = ChunkInventoryPayload(
