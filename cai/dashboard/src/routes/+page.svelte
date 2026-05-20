@@ -1378,7 +1378,7 @@ SPDX-License-Identifier: Apache-2.0
       worker?.network_default_execution_model_id?.trim() || "";
 
     if (!requestedModelId) {
-      return executionModelId || networkDefaultModelId || null;
+      return networkDefaultModelId || executionModelId || null;
     }
     if (!isCaiDirectTextChatCandidate(requestedModelId, files)) {
       return requestedModelId;
@@ -1393,15 +1393,22 @@ SPDX-License-Identifier: Apache-2.0
     }
     if (compatibleModelIds.has(requestedModelId)) {
       if (
+        requestedModelId === executionModelId &&
+        networkDefaultModelId &&
+        executionModelId !== networkDefaultModelId
+      ) {
+        return networkDefaultModelId;
+      }
+      if (
         requestedModelId === networkDefaultModelId &&
         executionModelId &&
         executionModelId !== requestedModelId
       ) {
-        return executionModelId;
+        return networkDefaultModelId;
       }
       return requestedModelId;
     }
-    return executionModelId || networkDefaultModelId || requestedModelId;
+    return networkDefaultModelId || executionModelId || requestedModelId;
   }
 
   function resolvePreferredAutoModel(
@@ -1421,18 +1428,18 @@ SPDX-License-Identifier: Apache-2.0
       compatibleModelIds.size > 0
         ? modelInfos.filter((model) => compatibleModelIds.has(model.id))
         : modelInfos;
-    const executionModelId =
-      caiData?.worker?.network_default_execution_model_id?.trim() || "";
-    const executionModel = executionModelId
+    const networkDefaultModelId =
+      caiData?.worker?.network_default_model_id?.trim() || "";
+    const networkDefaultModel = networkDefaultModelId
       ? compatibleModels.find(
           (model) =>
-            model.id === executionModelId &&
+            model.id === networkDefaultModelId &&
             (model.storage_size_megabytes || 0) > 0 &&
             (model.storage_size_megabytes || 0) / 1024 <= memoryGB,
         )
       : undefined;
-    if (executionModel) {
-      return executionModel;
+    if (networkDefaultModel) {
+      return networkDefaultModel;
     }
     return pickAutoModel(
       compatibleModels.length > 0 ? compatibleModels : modelInfos,

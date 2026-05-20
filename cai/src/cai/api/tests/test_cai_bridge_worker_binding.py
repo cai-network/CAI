@@ -448,6 +448,53 @@ def test_chat_completion_defaults_to_private_network_model() -> None:
     assert calls == ["cai-network/Qwen3-0.6B-GGUF"]
 
 
+def test_chat_completion_normalizes_execution_alias_to_private_network_model() -> None:
+    calls: list[tuple[str, str]] = []
+
+    service = object.__new__(CaiBridgeService)
+    service.state_url = "http://127.0.0.1:52415/state"
+    service.cai_url = "http://127.0.0.1:52415"
+    service.execution_cai_url = "http://127.0.0.1:52415"
+    service.local_node_id = "node-local"
+    service.wallet_policy = object()
+    service.money_policy = object()
+    service.network_model_policy = SimpleNamespace(
+        network_default_model_id="cai-network/Qwen3-0.6B-GGUF",
+        network_default_execution_model_id="Qwen/Qwen3-0.6B-GGUF",
+    )
+    service.modules = SimpleNamespace(
+        model=SimpleNamespace(PaymentPreference=SimpleNamespace(AUTO="auto")),
+        jobs=SimpleNamespace(
+            create_job_intent=lambda **kwargs: calls.append(
+                (
+                    kwargs["model_id"],
+                    kwargs["request_payload_preview"]["model"],
+                )
+            )
+            or SimpleNamespace(job_id="job-1"),
+            execute_job_intent=lambda *args, **kwargs: (
+                SimpleNamespace(job_id="job-1"),
+                SimpleNamespace(raw_response={"id": "resp-1"}),
+            ),
+        ),
+    )
+    service._ensure_local_worker_reward_binding = lambda: None  # pyright: ignore[method-assign]
+
+    service.chat_completion(
+        {
+            "model": "Qwen/Qwen3-0.6B-GGUF",
+            "messages": [{"role": "user", "content": "2+3=?"}],
+        }
+    )
+
+    assert calls == [
+        (
+            "cai-network/Qwen3-0.6B-GGUF",
+            "cai-network/Qwen3-0.6B-GGUF",
+        )
+    ]
+
+
 def test_chat_completion_keeps_private_model_when_private_default_lacks_workers() -> None:
     calls: list[str] = []
 
@@ -1558,6 +1605,9 @@ def test_attest_worker_capability_fetches_source_and_records_attestation() -> No
             ),
         ),
         node_capabilities=SimpleNamespace(
+            verified_node_capability_records_from_payload=(
+                lambda *args, **kwargs: [record]
+            ),
             merge_remote_node_capabilities_payload=(
                 lambda payload, source_url, policy=None, only_node_id=None: (
                     merge_calls.append(
@@ -1651,6 +1701,9 @@ def test_attest_worker_capability_worker_submitted_payload_issues_challenge() ->
             ),
         ),
         node_capabilities=SimpleNamespace(
+            verified_node_capability_records_from_payload=(
+                lambda *args, **kwargs: [record]
+            ),
             merge_remote_node_capabilities_payload=(
                 lambda payload, source_url, policy=None, only_node_id=None: (
                     merge_calls.append(
@@ -1662,7 +1715,6 @@ def test_attest_worker_capability_worker_submitted_payload_issues_challenge() ->
                     or 1
                 )
             ),
-            list_node_capabilities=lambda policy=None: [record],
         ),
         wallet=SimpleNamespace(
             find_wallet_by_id=lambda wallet_id, policy=None: SimpleNamespace(
@@ -1736,8 +1788,10 @@ def test_attest_worker_capability_worker_submitted_payload_records_receipt() -> 
             ),
         ),
         node_capabilities=SimpleNamespace(
+            verified_node_capability_records_from_payload=(
+                lambda *args, **kwargs: [record]
+            ),
             merge_remote_node_capabilities_payload=lambda *args, **kwargs: 1,
-            list_node_capabilities=lambda policy=None: [record],
         ),
         wallet=SimpleNamespace(
             find_wallet_by_id=lambda wallet_id, policy=None: SimpleNamespace(

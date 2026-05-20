@@ -789,6 +789,117 @@ class CaiBridgeService:
             "records": [getattr(item, "__dict__", item) for item in records],
         }
 
+    def _ensure_local_worker_capability_attested_best_effort(
+        self,
+        model_id: str,
+    ) -> None:
+        try:
+            required = (
+                self.modules.node_capabilities.worker_capability_validator_attestation_required()
+            )
+        except Exception:
+            return
+        if not required:
+            return
+
+        local_node_id = str(getattr(self, "local_node_id", None) or "").strip()
+        if not local_node_id:
+            return
+
+        accepted_model_ids = _accepted_worker_capability_model_ids(
+            self.modules,
+            model_id,
+        )
+        try:
+            verified_node_ids = self.modules.node_capabilities.list_verified_worker_node_ids(
+                self.wallet_policy,
+                accepted_model_ids=accepted_model_ids,
+            )
+            if local_node_id in verified_node_ids:
+                return
+        except Exception:
+            pass
+
+        try:
+            state_payload = _load_state_payload(self.state_url)
+        except Exception:
+            state_payload = {}
+        try:
+            self.modules.node_capabilities.refresh_local_node_capabilities(
+                state_payload=state_payload,
+                cai_url=self.cai_url,
+                local_node_id=local_node_id,
+                policy=self.wallet_policy,
+            )
+        except Exception:
+            pass
+
+        try:
+            capability_payload = self.node_capabilities()
+        except Exception:
+            return
+
+        for validator_url in _candidate_validator_api_urls(
+            state_payload=state_payload,
+            network_config=self.network_config,
+            local_cai_url=self.cai_url,
+        ):
+            try:
+                if self._request_worker_capability_attestation(
+                    validator_url=validator_url,
+                    capability_payload=capability_payload,
+                    local_node_id=local_node_id,
+                ):
+                    return
+            except Exception:
+                continue
+
+    def _request_worker_capability_attestation(
+        self,
+        *,
+        validator_url: str,
+        capability_payload: dict[str, Any],
+        local_node_id: str,
+    ) -> bool:
+        attestation_url = f"{validator_url.rstrip('/')}/v1/cai/worker-capability/attest"
+        submitted_source_url = self.cai_url
+        request_payload: dict[str, Any] = {
+            "capabilityPayload": capability_payload,
+            "nodeId": local_node_id,
+            "submittedSourceUrl": submitted_source_url,
+        }
+        response = _post_json(attestation_url, request_payload, timeout=6)
+        if response.get("challengeRequired") is True and isinstance(
+            response.get("challenge"),
+            dict,
+        ):
+            challenge = response["challenge"]
+            challenge_response = self.worker_capability_challenge({"challenge": challenge})
+            challenge_receipt = (
+                challenge_response.get("receipt")
+                if isinstance(challenge_response, dict)
+                else None
+            )
+            if not isinstance(challenge_receipt, dict):
+                return False
+            request_payload = {
+                **request_payload,
+                "challenge": challenge,
+                "challengeReceipt": challenge_receipt,
+            }
+            response = _post_json(attestation_url, request_payload, timeout=6)
+
+        if response.get("accepted") is not True:
+            return False
+
+        attestations_url = (
+            f"{validator_url.rstrip('/')}/v1/cai/worker-capability-attestations"
+        )
+        attestations_payload = _get_json(attestations_url, timeout=6)
+        attestations_payload.setdefault("sourceUrl", attestations_url)
+        self.sync_worker_capability_attestations(attestations_payload)
+        return True
+
     def worker_capability_challenge(self, payload: dict[str, Any]) -> dict[str, Any]:
         challenge = payload.get("challenge") if isinstance(payload, dict) else None
         if not isinstance(challenge, dict):
@@ -1916,11 +2027,13 @@ class CaiBridgeService:
             source_label = _worker_capability_source_endpoint(source_label)
 
         try:
-            self.modules.node_capabilities.merge_remote_node_capabilities_payload(
-                capability_payload,
-                source_url=source_label,
-                policy=self.wallet_policy,
-                only_node_id=requested_node_id or None,
+            candidates = (
+                self.modules.node_capabilities.verified_node_capability_records_from_payload(
+                    capability_payload,
+                    source_url=source_label,
+                    policy=self.wallet_policy,
+                    only_node_id=requested_node_id or None,
+                )
             )
         except ValueError as exc:
             return {
@@ -1935,16 +2048,17 @@ class CaiBridgeService:
                     "reachable": None,
                 },
             }
-
-        records = self.modules.node_capabilities.list_node_capabilities(
-            self.wallet_policy
-        )
-        candidates = [
-            record
-            for record in records
-            if not requested_node_id
-            or str(getattr(record, "node_id", "") or "").strip() == requested_node_id
-        ]
+        try:
+            self.modules.node_capabilities.merge_remote_node_capabilities_payload(
+                capability_payload,
+                source_url=source_label,
+                policy=self.wallet_policy,
+                only_node_id=requested_node_id or None,
+            )
+        except ValueError:
+            # The attestation decision must be based on the signed submitted payload,
+            # not on whether the validator could update its local capability cache.
+            pass
         record = next(
             (item for item in candidates if getattr(item, "worker_verified", False)),
             None,
@@ -2591,6 +2705,38 @@ class CaiBridgeService:
         model_id: str,
     ) -> str:
         normalized_model_id = str(model_id or "").strip()
+        if not normalized_model_id:
+            return ""
+
+        normalize_model_id = getattr(
+            self.modules.model,
+            "normalize_network_model_id",
+            None,
+        )
+        if callable(normalize_model_id):
+            normalized_model_id = normalize_model_id(
+                normalized_model_id,
+                self.network_model_policy,
+            )
+        network_default_model_id = str(
+            getattr(self.network_model_policy, "network_default_model_id", "") or ""
+        ).strip()
+        execution_model_id = str(
+            getattr(self.network_model_policy, "network_default_execution_model_id", "")
+            or ""
+        ).strip()
+        if (
+            normalized_model_id == execution_model_id
+            and network_default_model_id
+            and network_default_model_id != execution_model_id
+        ):
+            return network_default_model_id
+
+        lookup_curated_model = getattr(self.modules.model, "curated_model_for_id", None)
+        if callable(lookup_curated_model):
+            curated_model = lookup_curated_model(normalized_model_id)
+            if curated_model is not None:
+                return str(getattr(curated_model, "model_id", normalized_model_id)).strip()
         return normalized_model_id
 
     def chat_completion(
@@ -2619,6 +2765,7 @@ class CaiBridgeService:
             raise ValueError("CAI metered chat requires at least one user message.")
 
         self._ensure_local_worker_reward_binding()
+        self._ensure_local_worker_capability_attested_best_effort(model_id)
 
         job = self.modules.jobs.create_job_intent(
             prompt=prompt,
@@ -2809,6 +2956,143 @@ def make_cai_service(
 def _load_state_payload(state_url: str) -> dict[str, Any]:
     with urlopen(state_url, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _get_json(url: str, *, timeout: float = 5) -> dict[str, Any]:
+    with urlopen(url, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float = 5,
+) -> dict[str, Any]:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        response_payload = json.loads(response.read().decode("utf-8"))
+    return response_payload if isinstance(response_payload, dict) else {}
+
+
+def _accepted_worker_capability_model_ids(
+    modules: Any,
+    model_id: str,
+) -> set[str]:
+    accepted = {str(model_id or "").strip()}
+    try:
+        execution_model_id = modules.model.resolve_execution_model_id(model_id)
+    except Exception:
+        execution_model_id = None
+    if execution_model_id:
+        accepted.add(str(execution_model_id).strip())
+    try:
+        curated_model = modules.model.curated_model_for_id(model_id)
+    except Exception:
+        curated_model = None
+    if curated_model is not None:
+        accepted.add(str(getattr(curated_model, "model_id", "") or "").strip())
+        accepted.add(
+            str(getattr(curated_model, "execution_model_id", "") or "").strip()
+        )
+        accepted.update(
+            str(item or "").strip()
+            for item in (getattr(curated_model, "runtime_model_ids", ()) or ())
+        )
+    return {item for item in accepted if item}
+
+
+def _candidate_validator_api_urls(
+    *,
+    state_payload: dict[str, Any],
+    network_config: Any,
+    local_cai_url: str,
+) -> list[str]:
+    candidates: list[str] = []
+    env_urls = os.getenv("CAI_VALIDATOR_API_URLS") or os.getenv(
+        "CAI_VALIDATOR_API_URL"
+    )
+    if env_urls:
+        candidates.extend(_split_csv(env_urls))
+
+    identities = state_payload.get("nodeIdentities")
+    if isinstance(identities, dict):
+        for identity in identities.values():
+            if not isinstance(identity, dict):
+                continue
+            if not (
+                identity.get("validatorEnabled")
+                or identity.get("validator_enabled")
+                or str(identity.get("validatorState") or "").lower() == "bonded"
+            ):
+                continue
+            candidates.extend(_identity_api_urls(identity))
+
+    default_api_port = int(getattr(network_config, "default_api_port", 52415) or 52415)
+    for peer in getattr(network_config, "bootstrap_peers", ()) or ():
+        url = _bootstrap_peer_to_api_url(str(peer), default_api_port=default_api_port)
+        if url:
+            candidates.append(url)
+
+    local = str(local_cai_url or "").strip().rstrip("/")
+    return [
+        item
+        for item in dict.fromkeys(str(url).strip().rstrip("/") for url in candidates)
+        if item and item != local
+    ]
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip().rstrip("/") for item in value.replace("\n", ",").split(",") if item.strip()]
+
+
+def _identity_api_urls(identity: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    raw_urls = identity.get("apiUrls") or identity.get("api_urls")
+    if isinstance(raw_urls, (list, tuple, set)):
+        urls.extend(str(item).strip().rstrip("/") for item in raw_urls if str(item).strip())
+    host = str(identity.get("apiHost") or identity.get("api_host") or "").strip()
+    port = str(identity.get("apiPort") or identity.get("api_port") or "").strip()
+    if host and port:
+        urls.append(f"http://{host}:{port}")
+    endpoints = identity.get("transportEndpoints") or identity.get("transport_endpoints")
+    if isinstance(endpoints, (list, tuple)):
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict):
+                continue
+            purpose = str(endpoint.get("purpose") or "").strip().lower()
+            if purpose and purpose != "api":
+                continue
+            endpoint_host = str(endpoint.get("host") or "").strip()
+            endpoint_port = str(endpoint.get("port") or "").strip()
+            if endpoint_host and endpoint_port:
+                urls.append(f"http://{endpoint_host}:{endpoint_port}")
+    return [url for url in dict.fromkeys(urls) if url]
+
+
+def _bootstrap_peer_to_api_url(peer: str, *, default_api_port: int) -> str | None:
+    parts = [part for part in str(peer or "").split("/") if part]
+    host = None
+    for marker in ("ip4", "ip6", "dns4", "dns6", "dns"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts):
+                host = parts[index + 1]
+                break
+    if not host:
+        return None
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{default_api_port}"
 
 
 def _sync_result_int_attr(result: Any, name: str) -> int:

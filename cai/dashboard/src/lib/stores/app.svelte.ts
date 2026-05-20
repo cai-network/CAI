@@ -2947,7 +2947,7 @@ class AppStore {
     const compatibleModelIds = this.getWorkerCompatibleTextModelIds();
 
     if (!requestedModelId) {
-      return executionModelId || networkDefaultModelId || null;
+      return networkDefaultModelId || executionModelId || null;
     }
     if (
       this.hasRunningInstanceForModel(requestedModelId) ||
@@ -2957,15 +2957,22 @@ class AppStore {
     }
     if (compatibleModelIds.has(requestedModelId)) {
       if (
+        requestedModelId === executionModelId &&
+        networkDefaultModelId &&
+        executionModelId !== networkDefaultModelId
+      ) {
+        return networkDefaultModelId;
+      }
+      if (
         requestedModelId === networkDefaultModelId &&
         executionModelId &&
         executionModelId !== requestedModelId
       ) {
-        return executionModelId;
+        return networkDefaultModelId;
       }
       return requestedModelId;
     }
-    return executionModelId || networkDefaultModelId || requestedModelId;
+    return networkDefaultModelId || executionModelId || requestedModelId;
   }
 
   private getModelForRequest(modelId?: string): string | null {
@@ -3000,11 +3007,12 @@ class AppStore {
     const networkDefaultModelId = workerSummary?.network_default_model_id;
     const executionModelId = workerSummary?.network_default_execution_model_id;
     if (
-      resolvedModelId === networkDefaultModelId &&
+      resolvedModelId === executionModelId &&
+      networkDefaultModelId &&
       executionModelId &&
-      executionModelId !== resolvedModelId
+      executionModelId !== networkDefaultModelId
     ) {
-      return executionModelId;
+      return networkDefaultModelId;
     }
     return resolvedModelId;
   }

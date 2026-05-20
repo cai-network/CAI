@@ -46,6 +46,7 @@ from hypercorn.typing import ASGIFramework
 from loguru import logger
 
 from cai_compute_chain.gguf_shard_policy import gguf_shard_compatibility
+from cai_compute_chain.model import curated_model_registry
 
 from cai.api.adapters.chat_completions import (
     chat_request_to_text_generation,
@@ -5320,25 +5321,63 @@ class API:
 
     async def get_models(self, status: str | None = Query(default=None)) -> ModelList:
         """Returns list of available models, optionally filtered by being downloaded."""
-        cards = await get_model_cards()
-        cards = [
-            card for card in cards if card.inference_backend == InferenceBackend.LlamaCpp
+        all_cards = await get_model_cards()
+        llama_cards = [
+            card for card in all_cards if card.inference_backend == InferenceBackend.LlamaCpp
         ]
+        cards_by_id = {str(card.model_id): card for card in llama_cards}
+        curated_models = tuple(curated_model_registry())
+        private_execution_ids = {
+            model.execution_model_id for model in curated_models if model.private_network
+        }
+        visible_curated_models = [
+            model
+            for model in curated_models
+            if model.private_network or model.model_id not in private_execution_ids
+        ]
+        selected_cards: list[tuple[ModelCard, str, str | None]] = []
+        selected_ids: set[str] = set()
+
+        for model in visible_curated_models:
+            card = cards_by_id.get(model.model_id) or cards_by_id.get(model.execution_model_id)
+            if card is None:
+                continue
+            selected_cards.append((card, model.model_id, model.display_name))
+            selected_ids.add(model.model_id)
+
+        for card in llama_cards:
+            card_id = str(card.model_id)
+            if card.is_custom and card_id not in selected_ids:
+                selected_cards.append((card, card_id, None))
+                selected_ids.add(card_id)
 
         if status == "downloaded":
             downloaded_model_ids: set[str] = set()
             for node_downloads in self.state.downloads.values():
                 for dl in node_downloads:
                     if isinstance(dl, DownloadCompleted):
-                        downloaded_model_ids.add(dl.shard_metadata.model_card.model_id)
-            cards = [c for c in cards if c.model_id in downloaded_model_ids]
+                        downloaded_model_ids.add(str(dl.shard_metadata.model_card.model_id))
+
+            aliases_by_model_id = {
+                model.model_id: {
+                    model.model_id,
+                    model.execution_model_id,
+                    *model.runtime_model_ids,
+                }
+                for model in curated_models
+            }
+            selected_cards = [
+                item
+                for item in selected_cards
+                if aliases_by_model_id.get(item[1], {item[1]}) & downloaded_model_ids
+            ]
 
         return ModelList(
             data=[
                 ModelListModel(
-                    id=card.model_id,
-                    hugging_face_id=card.model_id,
-                    name=card.model_id.short(),
+                    id=model_id,
+                    hugging_face_id=model_id,
+                    name=display_name or ModelId(model_id).short(),
                     description="",
                     tags=[],
                     storage_size_megabytes=card.storage_size.in_mb,
@@ -5364,7 +5403,7 @@ class API:
                     decode_state_format=card.decode_state_format,
                     shard_compatibility_reason=card.shard_compatibility_reason,
                 )
-                for card in cards
+                for card, model_id, display_name in selected_cards
             ]
         )
 

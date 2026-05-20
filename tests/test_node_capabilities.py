@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from cai_compute_chain.node_capabilities import (
+    NodeCapabilityRecord,
     export_node_capabilities_payload,
     list_node_capabilities,
     list_verified_worker_node_ids,
@@ -24,7 +26,9 @@ from cai_compute_chain.node_capabilities import (
     node_capabilities_file_path,
     prune_stale_node_capabilities,
     refresh_local_node_capabilities,
+    save_node_capabilities,
     sync_node_capabilities_from_cai_peers,
+    verified_node_capability_records_from_payload,
     worker_capability_verification_required,
 )
 from cai_compute_chain.model import WalletPolicy
@@ -145,6 +149,43 @@ class NodeCapabilityTests(unittest.TestCase):
         )
         self.assertEqual(record["route_hints"]["directPeerIds"], ["node-b"])
 
+    def test_export_node_capabilities_backfills_local_worker_config(self) -> None:
+        with patch(
+            "cai_compute_chain.node_config.load_or_create_node_config",
+            return_value=SimpleNamespace(
+                worker_enabled=True,
+                relay_enabled=True,
+                worker_allowed_model_ids=["cai-network/Qwen3-0.6B-GGUF"],
+                worker_reward_address_by_node_id={
+                    "node-local": "abcd1234abcd1234abcd1234abcd1234"
+                },
+            ),
+        ):
+            payload = export_node_capabilities_payload(
+                state_payload={
+                    "nodeIdentities": {
+                        "node-local": {
+                            "apiHost": "127.0.0.1",
+                            "apiPort": 52415,
+                            "workerEnabled": True,
+                        }
+                    }
+                },
+                cai_url="http://127.0.0.1:52415",
+                local_node_id="node-local",
+                policy=self.policy,
+            )
+
+        record = payload["records"][0]
+        self.assertEqual(
+            record["worker_allowed_model_ids"],
+            ["cai-network/Qwen3-0.6B-GGUF"],
+        )
+        self.assertEqual(
+            record["worker_reward_address"],
+            "abcd1234abcd1234abcd1234abcd1234",
+        )
+
     def test_refresh_merge_and_prune_node_capabilities(self) -> None:
         records = refresh_local_node_capabilities(
             state_payload={
@@ -196,6 +237,7 @@ class NodeCapabilityTests(unittest.TestCase):
         signing_seed = generate_signing_seed()
         public_key_b64 = public_key_b64_from_seed(signing_seed)
         reward_address = address_from_public_key_b64(public_key_b64)
+        node_public_key_b64 = public_key_b64_from_seed(generate_signing_seed())
         payload = sign_peer_payload(
             self.peer_payload({
                 "records": [
@@ -205,7 +247,7 @@ class NodeCapabilityTests(unittest.TestCase):
                         "last_seen_at": "2026-05-02T00:00:00+00:00",
                         "worker_enabled": True,
                         "worker_reward_address": reward_address,
-                        "node_public_key_b64": public_key_b64,
+                        "node_public_key_b64": node_public_key_b64,
                         "api_urls": ["http://198.51.100.10:52415"],
                     }
                 ]
@@ -228,6 +270,64 @@ class NodeCapabilityTests(unittest.TestCase):
         self.assertEqual(
             list_verified_worker_node_ids(self.policy),
             {"node-worker"},
+        )
+
+    def test_submitted_signed_worker_payload_verifies_without_store_replacement(
+        self,
+    ) -> None:
+        signing_seed = generate_signing_seed()
+        public_key_b64 = public_key_b64_from_seed(signing_seed)
+        reward_address = address_from_public_key_b64(public_key_b64)
+        save_node_capabilities(
+            [
+                NodeCapabilityRecord(
+                    node_id="node-worker",
+                    source="peer",
+                    source_url="http://198.51.100.10:52415/v1/cai/node-capabilities",
+                    last_seen_at="2026-05-03T00:00:00+00:00",
+                    updated_at="2026-05-03T00:00:00+00:00",
+                    worker_enabled=True,
+                    worker_reward_address=reward_address,
+                    worker_verified=False,
+                )
+            ],
+            self.policy,
+        )
+        payload = sign_peer_payload(
+            self.peer_payload({
+                "records": [
+                    {
+                        "node_id": "node-worker",
+                        "updated_at": "2026-05-02T00:00:00+00:00",
+                        "last_seen_at": "2026-05-02T00:00:00+00:00",
+                        "worker_enabled": True,
+                        "worker_reward_address": reward_address,
+                    }
+                ]
+            }),
+            public_key_b64=public_key_b64,
+            signing_seed_b64=base64.b64encode(signing_seed).decode("ascii"),
+            signer_address=reward_address,
+        )
+
+        imported = merge_remote_node_capabilities_payload(
+            payload,
+            source_url="http://198.51.100.10:52415/v1/cai/node-capabilities",
+            policy=self.policy,
+        )
+        records = verified_node_capability_records_from_payload(
+            payload,
+            source_url="http://198.51.100.10:52415/v1/cai/node-capabilities",
+            policy=self.policy,
+            only_node_id="node-worker",
+        )
+
+        self.assertEqual(imported, 0)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0].worker_verified)
+        self.assertEqual(
+            records[0].worker_verification_reason,
+            "signed worker capability",
         )
 
     def test_merge_node_capabilities_can_limit_import_to_requested_node(self) -> None:

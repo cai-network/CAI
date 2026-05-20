@@ -152,6 +152,11 @@ def export_node_capabilities_payload(
         local_node_id=local_node_id,
         observed_at=now,
     )
+    _augment_local_record_from_node_config(
+        records,
+        local_node_id=local_node_id,
+        policy=policy,
+    )
     if not records:
         records = [
             _minimal_local_record(
@@ -160,6 +165,11 @@ def export_node_capabilities_payload(
                 observed_at=now,
             )
         ]
+        _augment_local_record_from_node_config(
+            records,
+            local_node_id=local_node_id,
+            policy=policy,
+        )
     active_policy = policy or WalletPolicy()
     return add_peer_payload_metadata(
         {
@@ -249,6 +259,57 @@ def merge_remote_node_capabilities_payload(
     if imported:
         save_node_capabilities(list(existing.values()), policy)
     return imported
+
+
+def verified_node_capability_records_from_payload(
+    payload: dict[str, Any],
+    *,
+    source_url: str,
+    policy: WalletPolicy | None = None,
+    source: str = "peer",
+    only_node_id: str | None = None,
+) -> list[NodeCapabilityRecord]:
+    validate_peer_payload_network(
+        payload,
+        policy=policy,
+        payload_name="node capabilities",
+    )
+    remote_source = source != "local_state"
+    require_signature = (
+        peer_payload_signatures_required(policy=policy) if remote_source else False
+    )
+    signature_ok, signature_error = verify_peer_payload_signature(
+        payload,
+        payload_name="node capabilities",
+        require_signature=require_signature,
+    )
+    if not signature_ok:
+        raise ValueError(
+            signature_error or "Invalid node capabilities payload signature."
+        )
+    signature_context = _payload_signature_context(payload, signature_ok=signature_ok)
+    requested_node_id = str(only_node_id or "").strip()
+    now = _now_iso()
+    records: list[NodeCapabilityRecord] = []
+    for raw in _iter_capability_records(payload):
+        node_id = str(raw.get("node_id") or raw.get("nodeId") or "").strip()
+        if not node_id:
+            continue
+        if requested_node_id and node_id != requested_node_id:
+            continue
+        record = _record_from_raw(
+            raw,
+            source=source,
+            source_url=source_url,
+            observed_at=now,
+        )
+        _apply_record_verification_metadata(
+            record,
+            signature_context=signature_context,
+            local_source=not remote_source,
+        )
+        records.append(record)
+    return records
 
 
 def worker_capability_verification_required(value: str | None = None) -> bool:
@@ -553,6 +614,43 @@ def _records_from_state_payload(
             )
         )
     return records
+
+
+def _augment_local_record_from_node_config(
+    records: list[NodeCapabilityRecord],
+    *,
+    local_node_id: str | None,
+    policy: WalletPolicy | None,
+) -> None:
+    normalized_local_node_id = str(local_node_id or "").strip()
+    if not normalized_local_node_id:
+        return
+    try:
+        from .node_config import load_or_create_node_config
+    except Exception:
+        return
+    try:
+        config = load_or_create_node_config(policy)
+    except Exception:
+        return
+    for record in records:
+        if str(record.node_id or "").strip() != normalized_local_node_id:
+            continue
+        if record.worker_enabled is None:
+            record.worker_enabled = bool(getattr(config, "worker_enabled", False))
+        if record.relay_enabled is None:
+            record.relay_enabled = bool(getattr(config, "relay_enabled", False))
+        if not record.worker_allowed_model_ids:
+            record.worker_allowed_model_ids = list(
+                getattr(config, "worker_allowed_model_ids", []) or []
+            )
+        if not str(record.worker_reward_address or "").strip():
+            reward_address = (
+                getattr(config, "worker_reward_address_by_node_id", {}) or {}
+            ).get(normalized_local_node_id)
+            if reward_address:
+                record.worker_reward_address = str(reward_address).strip()
+        return
 
 
 def _state_node_identity_ids(state_payload: dict[str, Any] | None) -> set[str]:
@@ -930,18 +1028,8 @@ def _worker_verification_status(
     if signer_address != reward_address:
         return False, "node capability signer does not match worker reward address"
 
-    record_public_key_address = str(
-        record.node_public_key_address or ""
-    ).strip().lower()
-    payload_public_key_address = str(
-        record.payload_public_key_address or ""
-    ).strip().lower()
-    if (
-        record_public_key_address
-        and payload_public_key_address
-        and record_public_key_address != payload_public_key_address
-    ):
-        return False, "node public key does not match capability signer"
+    # The peer payload is signed by the worker reward wallet. The node public key is
+    # the transport identity and normally differs from the wallet key.
     return True, "signed worker capability"
 
 
