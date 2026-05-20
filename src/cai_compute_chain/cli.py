@@ -496,6 +496,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     model_package_ensure_ready_parser.add_argument("--max-tasks", type=int)
+    model_package_cache_all_parser = subparsers.add_parser(
+        "model-package-cache-all",
+        help="Fetch and cache every chunk required to serve a full model package as a public seed",
+    )
+    model_package_cache_all_parser.add_argument("catalog_id")
+    model_package_cache_all_parser.add_argument("version")
+    model_package_cache_all_parser.add_argument("--node-id")
+    model_package_cache_all_parser.add_argument("--max-tasks", type=int)
+    model_package_cache_all_parser.add_argument(
+        "--use-imported-peer-inventory",
+        action="store_true",
+    )
+    model_package_cache_all_parser.add_argument(
+        "--use-imported-seed-inventory",
+        action="store_true",
+    )
     chunk_download_mark_parser = subparsers.add_parser(
         "chunk-download-mark",
         help="Update local chunk download task status",
@@ -1985,6 +2001,29 @@ def _load_chunk_inventory(path: str | None) -> dict[str, tuple[str, ...]] | None
     return normalized
 
 
+def _manifest_total_layer_count(manifest) -> int:
+    for key in ("total_layers", "layer_count", "n_layers"):
+        try:
+            value = int(manifest.metadata.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+
+    layer_ends = [
+        int(chunk.layer_end)
+        for chunk in manifest.chunks
+        if chunk.layer_end is not None and int(chunk.layer_end) > 0
+    ]
+    if layer_ends:
+        return max(layer_ends)
+
+    raise ValueError(
+        "Model package does not expose a total layer count; "
+        "cannot derive a full-model shard assignment."
+    )
+
+
 def handle_chunk_inventory_local(source_id: str, *, source_kind: str) -> str:
     payload = build_local_chunk_inventory_payload(
         source_id,
@@ -2327,6 +2366,77 @@ def handle_model_package_ensure_ready(
         - processed_now={len(result.processed_tasks)}
         - processed_completed={processed_completed}
         - processed_failed={processed_failed}
+        - queue_tasks={snapshot.stats.task_count}
+        - queue_completed={snapshot.stats.completed_count}
+        - queue_failed={snapshot.stats.failed_count}
+        """
+    ).strip().splitlines()
+    insertion_index = lines.index(f"- queue_tasks={snapshot.stats.task_count}")
+    lines[insertion_index:insertion_index] = _chunk_task_source_lines(
+        "processed",
+        result.processed_tasks,
+    )
+    return "\n".join(lines)
+
+
+def handle_model_package_cache_all(
+    catalog_id: str,
+    version: str,
+    *,
+    node_id: str | None,
+    use_imported_peer_inventory: bool,
+    use_imported_seed_inventory: bool,
+    max_tasks: int | None,
+) -> str:
+    manifest = load_model_package_manifest(catalog_id, version)
+    total_layers = _manifest_total_layer_count(manifest)
+    resolved_node_id = str(node_id or "").strip() or "local-model-package-seed"
+    result = ensure_assignment_ready_from_store(
+        manifest,
+        ModelShardAssignment(
+            start_layer=0,
+            end_layer=total_layers,
+            device_rank=0,
+            world_size=1,
+            node_id=resolved_node_id,
+        ),
+        use_imported_peer_inventory=use_imported_peer_inventory,
+        use_imported_seed_inventory=use_imported_seed_inventory,
+        max_tasks=max_tasks,
+    )
+    inventory_path = save_local_chunk_inventory_payload(
+        resolved_node_id,
+        source_kind=ChunkInventorySourceKind.LOCAL_CACHE,
+    )
+    snapshot = chunk_download_queue_snapshot()
+    processed_completed = sum(
+        1
+        for task in result.processed_tasks
+        if task.status == ChunkDownloadTaskStatus.COMPLETED
+    )
+    processed_failed = sum(
+        1
+        for task in result.processed_tasks
+        if task.status == ChunkDownloadTaskStatus.FAILED
+    )
+    lines = dedent(
+        f"""
+        Model package full cache:
+        - catalog_id={catalog_id}
+        - version={version}
+        - source_id={resolved_node_id}
+        - layer_range=0:{total_layers}
+        - initial_ready={str(result.initial_plan.ready).lower()}
+        - final_ready={str(result.final_plan.ready).lower()}
+        - initial_missing_chunks={len(result.initial_plan.coverage.missing_chunk_ids)}
+        - final_missing_chunks={len(result.final_plan.coverage.missing_chunk_ids)}
+        - initial_fetch_bytes={result.initial_plan.estimated_fetch_bytes}
+        - final_fetch_bytes={result.final_plan.estimated_fetch_bytes}
+        - queued_now={len(result.queued_tasks)}
+        - processed_now={len(result.processed_tasks)}
+        - processed_completed={processed_completed}
+        - processed_failed={processed_failed}
+        - local_inventory_path={inventory_path}
         - queue_tasks={snapshot.stats.task_count}
         - queue_completed={snapshot.stats.completed_count}
         - queue_failed={snapshot.stats.failed_count}
@@ -4273,6 +4383,19 @@ def main() -> None:
                 node_id=args.node_id,
                 peer_inventory_json=args.peer_inventory_json,
                 seed_inventory_json=args.seed_inventory_json,
+                use_imported_peer_inventory=args.use_imported_peer_inventory,
+                use_imported_seed_inventory=args.use_imported_seed_inventory,
+                max_tasks=args.max_tasks,
+            )
+        )
+        return
+
+    if args.command == "model-package-cache-all":
+        print(
+            handle_model_package_cache_all(
+                args.catalog_id,
+                args.version,
+                node_id=args.node_id,
                 use_imported_peer_inventory=args.use_imported_peer_inventory,
                 use_imported_seed_inventory=args.use_imported_seed_inventory,
                 max_tasks=args.max_tasks,
