@@ -28,13 +28,13 @@ from .wallet_signing import (
     verify_payload_signature,
 )
 from .chain import (
+    append_chain_block,
     chain_balance_atomic,
     chain_settlement_history,
     compute_reserve_chain_address,
     ensure_chain_genesis,
     has_chain_activity_for_address,
     make_chain_transaction,
-    record_chain_transaction,
     tx_fee_pool_chain_address,
     validator_settlement_fee_pool_chain_address,
 )
@@ -1062,6 +1062,7 @@ def record_chain_entries_for_settlement(
         if item.get("nonce") is not None and str(item.get("address") or "").strip()
     }
     balance_audit_targets: list[dict[str, Any]] = []
+    pending_transactions: list[Any] = []
 
     def _record_if_missing(tx: Any) -> bool:
         nonlocal recorded
@@ -1079,9 +1080,7 @@ def record_chain_entries_for_settlement(
             if nonce_key in recorded_nonces:
                 return False
 
-        if not record_chain_transaction(tx, policy=policy):
-            return False
-
+        pending_transactions.append(tx)
         if tx_id:
             recorded_tx_ids.add(tx_id)
         if nonce_key is not None:
@@ -1461,6 +1460,12 @@ def record_chain_entries_for_settlement(
         _record_if_missing(tx)
     if changed:
         save_worker_payouts(updated_payouts, policy)
+    if pending_transactions:
+        append_chain_block(
+            pending_transactions,
+            validator_id=settlement.applied_by_validator_id,
+            policy=policy,
+        )
     _record_settlement_chain_balance_audit(
         settlement,
         balance_audit_targets,

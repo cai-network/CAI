@@ -902,6 +902,15 @@ def append_chain_block(
     block.state_root = compute_chain_state_root([*blocks, block])
     block.block_hash = compute_block_hash(block)
     blocks.append(block)
+    supply_error = _validate_chain_supply_invariant(blocks, policy=policy)
+    if supply_error is not None:
+        raise ValueError(supply_error)
+    validation_errors = validate_chain_blocks(blocks, policy=policy)
+    if validation_errors:
+        raise ValueError(
+            "Refusing chain block that would make local chain invalid: "
+            + "; ".join(validation_errors[:3])
+        )
     save_chain_blocks(blocks, policy)
     return block
 
@@ -1339,17 +1348,25 @@ def merge_remote_chain_payload(
 
     local_blocks = list_chain_blocks(policy)
     remote_blocks = _coerce_valid_remote_chain(raw_blocks, local_network, policy=policy)
+    signed_by_bonded_validator = _chain_payload_signed_by_bonded_validator(
+        payload,
+        policy=policy,
+    )
     fork_imported = _adopt_authoritative_remote_fork(
         remote_blocks,
         local_blocks=local_blocks,
-        signed_by_bonded_validator=_chain_payload_signed_by_bonded_validator(
-            payload,
-            policy=policy,
-        ),
+        signed_by_bonded_validator=signed_by_bonded_validator,
         policy=policy,
     )
     if fork_imported is not None:
         return fork_imported
+    if (
+        not signed_by_bonded_validator
+        and _raw_payload_has_non_genesis_block(raw_blocks)
+    ):
+        raise ValueError(
+            "Refusing chain extension payload without authorized validator finality."
+        )
 
     known_block_heights_by_hash = {
         block.block_hash: int(block.height)
@@ -1408,6 +1425,12 @@ def merge_remote_chain_payload(
 
     if imported_blocks:
         local_blocks.sort(key=lambda item: (int(item.height), item.created_at, item.block_hash))
+        validation_errors = validate_chain_blocks(local_blocks, policy=policy)
+        if validation_errors:
+            raise ValueError(
+                "Refusing chain payload that would make local chain invalid: "
+                + "; ".join(validation_errors[:3])
+            )
         save_chain_blocks(local_blocks, policy)
     return imported_blocks, imported_transactions
 
@@ -1521,16 +1544,41 @@ def _chain_payload_signed_by_bonded_validator(
     if not signer_addresses:
         return False
 
-    for record in list_bonded_validators(policy):
+    active_policy = policy or WalletPolicy()
+    bonded_records = list_bonded_validators(active_policy)
+    local_bonded_addresses: set[str] = set()
+    for record in bonded_records:
         if record.state != ValidatorLifecycleState.BONDED:
             continue
-        record_addresses = {
-            str(record.validator_id or "").strip().lower(),
-            str(record.address or "").strip().lower(),
-        }
-        record_addresses.discard("")
-        if signer_addresses & record_addresses:
-            return True
+        local_bonded_addresses.update(
+            {
+                str(record.validator_id or "").strip().lower(),
+                str(record.address or "").strip().lower(),
+            }
+        )
+    local_bonded_addresses.discard("")
+    if len(local_bonded_addresses) > 1:
+        return False
+    trusted_addresses = {
+        str(address or "").strip().lower()
+        for address in getattr(active_policy, "trusted_validator_addresses", ())
+    }
+    trusted_addresses.discard("")
+    authorized_addresses = local_bonded_addresses or trusted_addresses
+    if not (signer_addresses & authorized_addresses):
+        return False
+    return True
+
+
+def _raw_payload_has_non_genesis_block(raw_blocks: list[Any]) -> bool:
+    for raw in raw_blocks:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            if int(raw.get("height") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
     return False
 
 

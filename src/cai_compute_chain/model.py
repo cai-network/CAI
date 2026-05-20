@@ -104,6 +104,7 @@ def default_require_hybrid_peer_payload_signatures() -> bool:
 class ChainNetworkPreset:
     namespace: str
     bootstrap_peers: tuple[str, ...]
+    trusted_validator_addresses: tuple[str, ...]
     default_api_port: int
     default_libp2p_port: int
     default_cai_home_dirname: str
@@ -119,11 +120,18 @@ MAINNET_BOOTSTRAP_PEERS: tuple[str, ...] = (
     "/ip4/192.145.29.212/tcp/52416",
 )
 
+MAINNET_TRUSTED_VALIDATOR_ADDRESSES: tuple[str, ...] = (
+    # Initial validator root used only to authenticate mainnet chain sync before
+    # a node has a local chain-backed validator set.
+    "2dabc2bfc0e6182aade1e5c17633d191fc290e3bd94b6153ab0992c79078a8ec",
+)
+
 
 CHAIN_NETWORK_PRESETS: dict[ChainNetwork, ChainNetworkPreset] = {
     ChainNetwork.MAINNET: ChainNetworkPreset(
         namespace="cai-ai-net",
         bootstrap_peers=MAINNET_BOOTSTRAP_PEERS,
+        trusted_validator_addresses=MAINNET_TRUSTED_VALIDATOR_ADDRESSES,
         default_api_port=52415,
         default_libp2p_port=52418,
         default_cai_home_dirname=".cai",
@@ -138,6 +146,7 @@ CHAIN_NETWORK_PRESETS: dict[ChainNetwork, ChainNetworkPreset] = {
     ChainNetwork.TESTNET: ChainNetworkPreset(
         namespace="cai-ai-testnet",
         bootstrap_peers=(),
+        trusted_validator_addresses=(),
         default_api_port=52515,
         default_libp2p_port=52518,
         default_cai_home_dirname=".cai-testnet",
@@ -319,6 +328,13 @@ def default_bootstrap_peers() -> tuple[str, ...]:
     return tuple(dict.fromkeys([*base_peers, *extra_peers]))
 
 
+def default_trusted_validator_addresses() -> tuple[str, ...]:
+    configured = _split_peer_env(os.getenv("CAI_TRUSTED_VALIDATOR_ADDRESSES"))
+    extra = _split_peer_env(os.getenv("CAI_EXTRA_TRUSTED_VALIDATOR_ADDRESSES"))
+    base = configured or list(active_chain_preset().trusted_validator_addresses)
+    return tuple(dict.fromkeys([*base, *extra]))
+
+
 def _split_peer_env(raw: str | None) -> list[str]:
     if raw is None:
         return []
@@ -457,6 +473,9 @@ class WalletPolicy:
     requires_password: bool = True
     require_post_quantum_wallet_signatures: bool | None = None
     require_hybrid_peer_payload_signatures: bool | None = None
+    trusted_validator_addresses: tuple[str, ...] = field(
+        default_factory=default_trusted_validator_addresses
+    )
     wallet_data_dirname: str = field(default_factory=default_wallet_data_dirname)
     wallet_file_name: str = "wallets.json"
     session_file_name: str = "session.json"

@@ -66,6 +66,24 @@ from cai_compute_chain.wallet_signing import (
 )
 
 
+TEST_TRUSTED_VALIDATOR_SIGNING_SEED = generate_signing_seed()
+TEST_TRUSTED_VALIDATOR_PUBLIC_KEY_B64 = public_key_b64_from_seed(
+    TEST_TRUSTED_VALIDATOR_SIGNING_SEED
+)
+TEST_TRUSTED_VALIDATOR_ADDRESS = address_from_public_key_b64(
+    TEST_TRUSTED_VALIDATOR_PUBLIC_KEY_B64
+)
+
+
+def sign_test_chain_payload(payload: dict) -> dict:
+    return sign_peer_payload(
+        payload,
+        public_key_b64=TEST_TRUSTED_VALIDATOR_PUBLIC_KEY_B64,
+        signing_seed_b64=encode_bytes(TEST_TRUSTED_VALIDATOR_SIGNING_SEED),
+        signer_address=TEST_TRUSTED_VALIDATOR_ADDRESS,
+    )
+
+
 _record_chain_transaction = record_chain_transaction
 
 
@@ -254,6 +272,7 @@ class ChainTests(unittest.TestCase):
             {
                 "CAI_REQUIRE_HYBRID_PEER_PAYLOAD_SIGNATURES": "0",
                 "CAI_REQUIRE_SIGNED_PEER_PAYLOADS": "0",
+                "CAI_TRUSTED_VALIDATOR_ADDRESSES": TEST_TRUSTED_VALIDATOR_ADDRESS,
             },
             clear=False,
         )
@@ -279,7 +298,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(tx, policy=source_policy))
         self.assertFalse(record_chain_transaction(tx, policy=source_policy))
 
-        payload = export_chain_payload(source_policy)
+        payload = sign_test_chain_payload(export_chain_payload(source_policy))
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
             policy=target_policy,
@@ -311,7 +330,9 @@ class ChainTests(unittest.TestCase):
             ),
             policy=source_policy,
         )
-        remote_payload = json.dumps(export_chain_payload(source_policy)).encode("utf-8")
+        remote_payload = json.dumps(
+            sign_test_chain_payload(export_chain_payload(source_policy))
+        ).encode("utf-8")
         peer_urls = [
             "http://node-a/v1/cai/chain",
             "http://node-b/v1/cai/chain",
@@ -407,13 +428,12 @@ class ChainTests(unittest.TestCase):
             policy=remote_policy,
         )
 
-        imported_blocks, imported_transactions = merge_remote_chain_payload(
-            export_chain_payload(remote_policy),
-            policy=local_policy,
-        )
+        with self.assertRaisesRegex(ValueError, "authorized validator finality"):
+            merge_remote_chain_payload(
+                export_chain_payload(remote_policy),
+                policy=local_policy,
+            )
 
-        self.assertEqual(imported_blocks, 0)
-        self.assertEqual(imported_transactions, 0)
         self.assertEqual(len(list_chain_blocks(local_policy)), 2)
         self.assertEqual(
             chain_balance_atomic(local_only_address, local_policy),
@@ -421,6 +441,73 @@ class ChainTests(unittest.TestCase):
         )
         self.assertEqual(chain_balance_atomic(remote_address, local_policy), 0)
         self.assertEqual(chain_balance_atomic(remote_second_address, local_policy), 0)
+
+    def test_chain_merge_rejects_self_asserted_validator_signature(self) -> None:
+        remote_policy = WalletPolicy(wallet_data_dirname="node-a")
+        local_policy = WalletPolicy(wallet_data_dirname="node-b")
+        signing_seed = generate_signing_seed()
+        public_key_b64 = public_key_b64_from_seed(signing_seed)
+        validator_address = address_from_public_key_b64(public_key_b64)
+
+        record_test_validator_bond(
+            policy=remote_policy,
+            validator_address=validator_address,
+        )
+        payload = sign_peer_payload(
+            export_chain_payload(remote_policy),
+            public_key_b64=public_key_b64,
+            signing_seed_b64=encode_bytes(signing_seed),
+            signer_address=validator_address,
+        )
+
+        with self.assertRaisesRegex(ValueError, "authorized validator finality"):
+            merge_remote_chain_payload(payload, policy=local_policy)
+
+        self.assertEqual(len(list_chain_blocks(local_policy)), 0)
+
+    def test_chain_merge_rejects_single_signer_when_local_committee_has_multiple_validators(self) -> None:
+        remote_policy = WalletPolicy(wallet_data_dirname="node-a")
+        local_policy = WalletPolicy(wallet_data_dirname="node-b")
+        first_seed = generate_signing_seed()
+        second_seed = generate_signing_seed()
+        first_public_key_b64 = public_key_b64_from_seed(first_seed)
+        second_public_key_b64 = public_key_b64_from_seed(second_seed)
+        first_validator = address_from_public_key_b64(first_public_key_b64)
+        second_validator = address_from_public_key_b64(second_public_key_b64)
+
+        for validator_address in (first_validator, second_validator):
+            sync_validator_record(
+                validator_id=validator_address,
+                wallet_id=f"wallet-{validator_address[:8]}",
+                address=validator_address,
+                state="bonded",
+                bonded_atomic=1_000,
+                static_ip_confirmed=True,
+                current_node_id=f"node-{validator_address[:8]}",
+                policy=local_policy,
+            )
+            record_test_validator_bond(
+                policy=local_policy,
+                validator_address=validator_address,
+            )
+        record_chain_transaction(
+            make_chain_transaction(
+                tx_type="remote_validator_credit",
+                address="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                delta_atomic=coins_to_atomic("2.00000000"),
+                nonce="remote-multi-validator-a",
+            ),
+            policy=remote_policy,
+        )
+        payload = sign_peer_payload(
+            export_chain_payload(remote_policy),
+            public_key_b64=first_public_key_b64,
+            signing_seed_b64=encode_bytes(first_seed),
+            signer_address=first_validator,
+        )
+
+        with self.assertRaisesRegex(ValueError, "authorized validator finality"):
+            merge_remote_chain_payload(payload, policy=local_policy)
 
     def test_chain_merge_adopts_bonded_validator_signed_remote_fork(self) -> None:
         remote_policy = WalletPolicy(wallet_data_dirname="node-a")
@@ -589,7 +676,10 @@ class ChainTests(unittest.TestCase):
         )
 
         self.assertTrue(record_chain_transaction(tx, policy=source_policy))
-        merge_remote_chain_payload(export_chain_payload(source_policy), policy=target_policy)
+        merge_remote_chain_payload(
+            sign_test_chain_payload(export_chain_payload(source_policy)),
+            policy=target_policy,
+        )
 
         expected_balance = coins_to_atomic("0.25000000", money_policy)
         self.assertEqual(
@@ -720,7 +810,7 @@ class ChainTests(unittest.TestCase):
         )
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
-            export_chain_payload(source_policy),
+            sign_test_chain_payload(export_chain_payload(source_policy)),
             policy=target_policy,
         )
 
@@ -897,6 +987,7 @@ class ChainTests(unittest.TestCase):
         payload = export_chain_payload(source_policy)
         payload["chain"]["blocks"][1]["previous_hash"] = "f" * 64
         payload["chain"]["blocks"][1]["block_hash"] = ""
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -922,6 +1013,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(tx, policy=source_policy))
         payload = export_chain_payload(source_policy)
         payload["chain"]["blocks"][1]["tx_root"] = "f" * 64
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -947,6 +1039,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(tx, policy=source_policy))
         payload = export_chain_payload(source_policy)
         payload["chain"]["blocks"][1]["state_root"] = "f" * 64
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -976,6 +1069,7 @@ class ChainTests(unittest.TestCase):
         for item in reward_block["transactions"]:
             item["chain_id"] = "testnet"
         recompute_raw_block_hash(reward_block)
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -1009,6 +1103,7 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(second_tx, policy=source_policy))
         payload = export_chain_payload(source_policy)
         payload["chain"]["blocks"] = list(reversed(payload["chain"]["blocks"]))
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -1048,6 +1143,7 @@ class ChainTests(unittest.TestCase):
         replayed_block["transactions"][1]["nonce"] = "nonce-1"
         replayed_block["tx_root"] = ""
         recompute_raw_block_hash(replayed_block)
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -1094,6 +1190,7 @@ class ChainTests(unittest.TestCase):
         reward_block = payload["chain"]["blocks"][1]
         reward_block["transactions"].append(dict(reward_block["transactions"][0]))
         recompute_raw_block_hash(reward_block)
+        payload = sign_test_chain_payload(payload)
 
         imported_blocks, imported_transactions = merge_remote_chain_payload(
             payload,
@@ -1128,13 +1225,12 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(record_chain_transaction(target_tx, policy=target_policy))
         payload = export_chain_payload(source_policy)
 
-        imported_blocks, imported_transactions = merge_remote_chain_payload(
-            payload,
-            policy=target_policy,
-        )
+        with self.assertRaisesRegex(ValueError, "authorized validator finality"):
+            merge_remote_chain_payload(
+                payload,
+                policy=target_policy,
+            )
 
-        self.assertEqual(imported_blocks, 0)
-        self.assertEqual(imported_transactions, 0)
         self.assertEqual(chain_balance_atomic(address_a, target_policy), 0)
         self.assertEqual(
             chain_balance_atomic(address_b, target_policy),
@@ -1167,6 +1263,7 @@ class ChainTests(unittest.TestCase):
     def test_chain_summary_reports_negative_balances(self) -> None:
         policy = WalletPolicy(wallet_data_dirname="node-a")
         address = "abcd1234abcd1234abcd1234abcd1234"
+        ensure_chain_genesis(policy=policy)
         tx = make_chain_transaction(
             tx_type="settlement_wallet_debit",
             address=address,
@@ -1174,8 +1271,21 @@ class ChainTests(unittest.TestCase):
             settlement_id="settlement-negative",
             wallet_id="wallet-negative",
         )
+        blocks = list_chain_blocks(policy)
+        block = ChainBlock(
+            block_id="negative-balance-test",
+            height=1,
+            created_at="2026-05-15T00:00:00+00:00",
+            previous_hash=blocks[-1].block_hash,
+            validator_id="test",
+            transactions=[tx],
+            block_hash="",
+            chain_id=MoneyPolicy().chain_network.value,
+            schema_version=CHAIN_SCHEMA_VERSION,
+        )
+        block.block_hash = compute_block_hash(block)
+        save_chain_blocks([*blocks, block], policy)
 
-        self.assertTrue(record_chain_transaction(tx, policy=policy))
         summary = chain_summary(policy)
 
         self.assertFalse(summary["valid"])
