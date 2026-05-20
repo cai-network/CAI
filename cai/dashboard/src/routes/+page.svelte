@@ -109,6 +109,18 @@ SPDX-License-Identifier: Apache-2.0
     buildNumber?: number | null;
     buildNumberLabel?: string | null;
   };
+  type CaiOwnedTransportReadiness = {
+    status?: string | null;
+    ready?: boolean;
+    runtimeReady?: boolean;
+  };
+  type CaiWorkerTransportSummary = {
+    readiness?: {
+      caiOwnedTransport?: CaiOwnedTransportReadiness | null;
+    };
+    caiOwnedTransport?: CaiOwnedTransportReadiness | null;
+    cai_owned_transport?: CaiOwnedTransportReadiness | null;
+  };
   const caiVersion = $derived.by(() => formatCaiRuntimeVersion(caiData?.runtime ?? null));
   const caiChainStatus = $derived(caiData?.chainStatus ?? null);
   const caiRewardStatus = $derived(caiData?.reward ?? null);
@@ -1276,8 +1288,9 @@ SPDX-License-Identifier: Apache-2.0
       textContent?: string;
       preview?: string;
     }[],
+    modelOverride?: string | null,
   ) {
-    const model = selectedChatModel();
+    const model = modelOverride || selectedChatModel();
     const walletAccessPrompt = getCaiWalletAccessPrompt(model, files);
     if (walletAccessPrompt) {
       showWalletAccessPrompt(walletAccessPrompt);
@@ -1312,7 +1325,7 @@ SPDX-License-Identifier: Apache-2.0
     }
 
     // Default: text chat
-    sendMessage(content, files, thinkingEnabled());
+    sendMessage(content, files, thinkingEnabled(), model);
     return true;
   }
 
@@ -1474,6 +1487,7 @@ SPDX-License-Identifier: Apache-2.0
   ): string | null {
     if (!isCaiDirectTextChatCandidate(modelId, files)) return null;
     if (!canRouteCaiDirectTextModel(modelId)) return null;
+    if (!isCaiOwnedTransportRuntimeReady()) return null;
     if (!caiData?.available) return null;
     if (!caiData.wallet?.has_active_wallet) {
       return t("error.walletCreate");
@@ -1498,7 +1512,8 @@ SPDX-License-Identifier: Apache-2.0
     if (
       !resolvedModelId ||
       !isCaiDirectTextChatCandidate(resolvedModelId, files) ||
-      !canRouteCaiDirectTextModel(resolvedModelId)
+      !canRouteCaiDirectTextModel(resolvedModelId) ||
+      !isCaiOwnedTransportRuntimeReady()
     ) {
       return false;
     }
@@ -1859,6 +1874,21 @@ SPDX-License-Identifier: Apache-2.0
     const summary = networkSummary();
     return summary?.caiOwnedTransportReadiness ?? null;
   });
+
+  function isCaiOwnedTransportRuntimeReady(): boolean {
+    const worker = caiData?.worker as CaiWorkerTransportSummary | undefined;
+    const workerReadiness =
+      worker?.readiness?.caiOwnedTransport ??
+      worker?.caiOwnedTransport ??
+      worker?.cai_owned_transport ??
+      null;
+    const readiness = caiOwnedTransportReadiness() ?? workerReadiness;
+    const status = readiness?.status?.trim().toLowerCase() ?? "";
+
+    return Boolean(
+      readiness?.runtimeReady || readiness?.ready || status === "ready",
+    );
+  }
 
   function caiOwnedTransportStatusValue(): string {
     return (
@@ -3510,6 +3540,12 @@ SPDX-License-Identifier: Apache-2.0
         pendingChatModelId = currentModel;
         return;
       }
+      if (status.statusText === "FAILED") {
+        chatLaunchState = "idle";
+        pendingChatModelId = null;
+        selectedChatCategory = null;
+        return;
+      }
       if (
         status.statusText === "WARMING UP" ||
         status.statusText === "WAITING" ||
@@ -3814,17 +3850,11 @@ SPDX-License-Identifier: Apache-2.0
     }));
     const autoModel = resolvePreferredAutoModel(modelInfos, totalMem);
 
-    // Prefer running model unless auto-pick is a strictly better tier
+    // Prefer an already-ready model instead of launching a different auto-pick.
     if (bestRunning) {
-      const autoTier = autoModel
-        ? getAutoTierIndex(autoModel.base_model)
-        : Infinity;
-      if (autoTier >= bestRunning.tierIndex) {
-        // Running model is same or better tier — use it directly
-        setSelectedChatModel(bestRunning.id);
-        if (!chatStarted) createConversation();
-        return routeMessage(content, files);
-      }
+      setSelectedChatModel(bestRunning.id);
+      if (!chatStarted) createConversation();
+      return routeMessage(content, files, bestRunning.id);
     }
 
     if (!autoModel) {
@@ -3839,7 +3869,7 @@ SPDX-License-Identifier: Apache-2.0
     if (hasRunningInstance(autoModel.id)) {
       setSelectedChatModel(autoModel.id);
       if (!chatStarted) createConversation();
-      return routeMessage(content, files);
+      return routeMessage(content, files, autoModel.id);
     }
 
     const walletAccessPrompt = getCaiWalletAccessPrompt(
@@ -3855,7 +3885,7 @@ SPDX-License-Identifier: Apache-2.0
       setSelectedChatModel(autoModel.id);
       if (!chatStarted) createConversation();
       chatLaunchState = "ready";
-      return routeMessage(content, files);
+      return routeMessage(content, files, autoModel.id);
     }
 
     // Already has an instance (downloading/loading) — attach to its progress
@@ -4029,9 +4059,20 @@ SPDX-License-Identifier: Apache-2.0
       if (pendingAutoMessage) {
         const msg = pendingAutoMessage;
         pendingAutoMessage = null;
-        routeMessage(msg.content, msg.files);
+        routeMessage(msg.content, msg.files, pendingChatModelId);
       }
       return;
+    }
+
+    for (const [, inst] of Object.entries(instanceData)) {
+      if (getInstanceModelId(inst) !== pendingChatModelId) continue;
+      if (deriveInstanceStatus(inst).statusText === "FAILED") {
+        pendingAutoMessage = null;
+        chatLaunchState = "idle";
+        pendingChatModelId = null;
+        selectedChatCategory = null;
+        return;
+      }
     }
 
     // If already ready (set by restore effect), don't downgrade state
@@ -4104,8 +4145,13 @@ SPDX-License-Identifier: Apache-2.0
       preview?: string;
     }[],
   ): boolean {
-    const selectedModel = selectedChatModel();
+    const explicitSelectedModel = selectedChatModel();
+    const selectedModel = explicitSelectedModel || idleChatModelId;
     let model = selectedModel;
+    if (!explicitSelectedModel && selectedModel) {
+      setSelectedChatModel(selectedModel);
+      selectPreviewModel(selectedModel);
+    }
     if (selectedModel) {
       const stableModel = resolveStableTextChatModelSelection(
         selectedModel,
@@ -4127,12 +4173,12 @@ SPDX-License-Identifier: Apache-2.0
 
     if (model && hasRunningInstance(model)) {
       chatLaunchState = "ready";
-      return routeMessage(content, files);
+      return routeMessage(content, files, model);
     }
 
     if (model && canUseCaiDirectTextChat(model, files)) {
       chatLaunchState = "ready";
-      return routeMessage(content, files);
+      return routeMessage(content, files, model);
     }
 
     // Model is selected but NOT running — launch it, queue the message
@@ -7327,7 +7373,7 @@ SPDX-License-Identifier: Apache-2.0
                   modelDisplayOverride={idleChatModelId ?? undefined}
                   modelTasks={modelTasks()}
                   modelCapabilities={modelCapabilities()}
-                  onAutoSend={selectedChatModel() ? handleChatSend : handleAutoSend}
+                  onAutoSend={idleChatModelId ? handleChatSend : handleAutoSend}
                   onOpenModelPicker={openChatModelPicker}
                   draftValue={chatInputDraft}
                   onDraftChange={updateChatInputDraft}
