@@ -1151,7 +1151,11 @@ def _record_text(record: Any, field_name: str) -> str:
 
 
 def _record_worker_public_key_address(record: Any) -> str | None:
-    for field_name in ("payload_public_key_address", "node_public_key_address"):
+    for field_name in (
+        "payload_public_key_address",
+        "worker_reward_address",
+        "node_public_key_address",
+    ):
         value = _record_text(record, field_name)
         if value:
             return normalize_address(value)
