@@ -231,7 +231,10 @@ SPDX-License-Identifier: Apache-2.0
     setTimeout(() => textareaRef?.focus(), 10);
   }
 
-  function handleInput() {
+  function handleInput(event?: Event) {
+    if (event?.currentTarget instanceof HTMLTextAreaElement) {
+      message = event.currentTarget.value;
+    }
     onDraftChange?.(message);
     if (!textareaRef) return;
     textareaRef.style.height = "auto";
