@@ -43,6 +43,8 @@ SPDX-License-Identifier: Apache-2.0
     ) => void;
     onOpenModelPicker?: () => void;
     modelDisplayOverride?: string;
+    draftValue?: string;
+    onDraftChange?: (value: string) => void;
   }
 
   let {
@@ -57,6 +59,8 @@ SPDX-License-Identifier: Apache-2.0
     onAutoSend,
     onOpenModelPicker,
     modelDisplayOverride,
+    draftValue,
+    onDraftChange,
   }: Props = $props();
 
   let message = $state("");
@@ -216,6 +220,7 @@ SPDX-License-Identifier: Apache-2.0
     const files = [...uploadedFiles];
 
     message = "";
+    onDraftChange?.("");
     uploadedFiles = [];
     resetTextareaHeight();
 
@@ -227,6 +232,7 @@ SPDX-License-Identifier: Apache-2.0
   }
 
   function handleInput() {
+    onDraftChange?.(message);
     if (!textareaRef) return;
     textareaRef.style.height = "auto";
     textareaRef.style.height = Math.min(textareaRef.scrollHeight, 150) + "px";
@@ -248,6 +254,13 @@ SPDX-License-Identifier: Apache-2.0
   $effect(() => {
     if (autofocus && textareaRef) {
       setTimeout(() => textareaRef?.focus(), 10);
+    }
+  });
+
+  $effect(() => {
+    if (draftValue !== undefined && draftValue !== message) {
+      message = draftValue;
+      setTimeout(handleInput, 0);
     }
   });
 

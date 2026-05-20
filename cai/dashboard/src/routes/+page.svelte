@@ -3245,6 +3245,7 @@ SPDX-License-Identifier: Apache-2.0
     pendingChatModelId = null;
     selectedChatCategory = null;
     pendingAutoMessage = null;
+    chatInputDraft = "";
     userForcedIdle = true;
     setSelectedChatModel("");
     createConversation();
@@ -3255,6 +3256,7 @@ SPDX-License-Identifier: Apache-2.0
     pendingChatModelId = null;
     selectedChatCategory = null;
     pendingAutoMessage = null;
+    chatInputDraft = "";
     userForcedIdle = true;
     // Restore chat model from the sidebar preview selection so both selectors stay in sync
     setSelectedChatModel(selectedModelId ?? "");
@@ -3440,9 +3442,14 @@ SPDX-License-Identifier: Apache-2.0
   let chatLaunchState = $state<ChatLaunchState>("idle");
   let pendingChatModelId = $state<string | null>(null);
   let selectedChatCategory = $state<string | null>(null);
+  let chatInputDraft = $state("");
   // Guard: when true, the restore $effect must not override chatLaunchState.
   // Set by handleNewChat/handleGoHome; cleared when the user picks a model.
   let userForcedIdle = $state(false);
+
+  function updateChatInputDraft(value: string) {
+    chatInputDraft = value;
+  }
 
   // Restore chat launch state when switching conversations
   $effect(() => {
@@ -3943,6 +3950,10 @@ SPDX-License-Identifier: Apache-2.0
     }
     return best?.id ?? null;
   });
+
+  const idleChatModelId = $derived.by(
+    () => selectedChatModel() || bestRunningModelId,
+  );
 
   // Track chat launch progress (download + loading)
   const chatLaunchDownload = $derived.by(() => {
@@ -5820,6 +5831,8 @@ SPDX-License-Identifier: Apache-2.0
               modelCapabilities={modelCapabilities()}
               onOpenModelPicker={openChatModelPicker}
               onAutoSend={handleChatSend}
+              draftValue={chatInputDraft}
+              onDraftChange={updateChatInputDraft}
             />
           </div>
 
@@ -6164,6 +6177,8 @@ SPDX-License-Identifier: Apache-2.0
                 modelCapabilities={modelCapabilities()}
                 onOpenModelPicker={openChatModelPicker}
                 onAutoSend={handleChatSend}
+                draftValue={chatInputDraft}
+                onDraftChange={updateChatInputDraft}
               />
             </div>
           </div>
@@ -7191,10 +7206,12 @@ SPDX-License-Identifier: Apache-2.0
                   modelCapabilities={modelCapabilities()}
                   onAutoSend={handleChatSend}
                   onOpenModelPicker={openChatModelPicker}
+                  draftValue={chatInputDraft}
+                  onDraftChange={updateChatInputDraft}
                 />
               </div>
             </div>
-          {:else if messages().length > 0 || chatLaunchState === "ready"}
+          {:else if messages().length > 0 || chatLaunchState === "ready" || selectedChatModel()}
             <!-- Normal chat: show messages -->
             <div
               class="flex-1 overflow-y-auto px-8 py-6"
@@ -7248,6 +7265,8 @@ SPDX-License-Identifier: Apache-2.0
                   modelCapabilities={modelCapabilities()}
                   onAutoSend={handleChatSend}
                   onOpenModelPicker={openChatModelPicker}
+                  draftValue={chatInputDraft}
+                  onDraftChange={updateChatInputDraft}
                 />
               </div>
             </div>
@@ -7279,12 +7298,14 @@ SPDX-License-Identifier: Apache-2.0
               <div class="max-w-7xl mx-auto">
                 <ChatForm
                   placeholder={tr("Ask anything - we'll pick the best model automatically")}
-                  showModelSelector={!!bestRunningModelId}
-                  modelDisplayOverride={bestRunningModelId ?? undefined}
+                  showModelSelector={!!idleChatModelId}
+                  modelDisplayOverride={idleChatModelId ?? undefined}
                   modelTasks={modelTasks()}
                   modelCapabilities={modelCapabilities()}
-                  onAutoSend={handleAutoSend}
+                  onAutoSend={selectedChatModel() ? handleChatSend : handleAutoSend}
                   onOpenModelPicker={openChatModelPicker}
+                  draftValue={chatInputDraft}
+                  onDraftChange={updateChatInputDraft}
                 />
               </div>
             </div>
