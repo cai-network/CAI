@@ -42,3 +42,20 @@ def parse_cai_owned_transport_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def is_safe_transport_file_id(value: object, *, prefix: str) -> bool:
+    clean = str(value or "").strip()
+    return (
+        bool(clean)
+        and clean.startswith(prefix)
+        and clean.isascii()
+        and all(ch.isalnum() or ch in {"_", "-"} for ch in clean)
+    )
+
+
+def require_safe_transport_file_id(value: object, *, prefix: str) -> str:
+    clean = str(value or "").strip()
+    if not is_safe_transport_file_id(clean, prefix=prefix):
+        raise ValueError("CAI-owned transport storage id is invalid.")
+    return clean

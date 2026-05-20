@@ -51,6 +51,20 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIsNotNone(parsed.tzinfo)
 
+        self.assertTrue(
+            common.is_safe_transport_file_id("caibatch_abc-123", prefix="caibatch_")
+        )
+        self.assertFalse(
+            common.is_safe_transport_file_id("../caibatch_abc", prefix="caibatch_")
+        )
+        self.assertEqual(
+            common.require_safe_transport_file_id(
+                " caistage_stage-1 ",
+                prefix="caistage_",
+            ),
+            "caistage_stage-1",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,7 +45,9 @@ from .cai_owned_transport_peer_urls import (
 from .cai_owned_transport_common import (
     cai_owned_transport_chain_id as _cai_owned_transport_chain_id,
     clean_node_ids as _clean_node_ids,
+    is_safe_transport_file_id as _is_safe_transport_file_id,
     parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
+    require_safe_transport_file_id as _require_safe_transport_file_id,
 )
 from .cai_owned_transport_protocol import (
     CAI_OWNED_LLM_HANDOFF_ABI,
@@ -8175,23 +8177,6 @@ def _decode_cai_owned_transport_payload_bytes(
     raise ValueError(
         "CAI-owned transport batch envelope payload compression is unsupported."
     )
-
-
-def _is_safe_transport_file_id(value: object, *, prefix: str) -> bool:
-    clean = str(value or "").strip()
-    return (
-        bool(clean)
-        and clean.startswith(prefix)
-        and clean.isascii()
-        and all(ch.isalnum() or ch in {"_", "-"} for ch in clean)
-    )
-
-
-def _require_safe_transport_file_id(value: object, *, prefix: str) -> str:
-    clean = str(value or "").strip()
-    if not _is_safe_transport_file_id(clean, prefix=prefix):
-        raise ValueError("CAI-owned transport storage id is invalid.")
-    return clean
 
 
 def _require_session_participant(
