@@ -6,6 +6,7 @@ import unittest
 
 from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
 from cai_compute_chain import cai_owned_transport_common as common
+from cai_compute_chain import cai_owned_transport_payload_codec as payload_codec
 from cai_compute_chain import cai_owned_transport_protocol as protocol
 from cai_compute_chain import cai_owned_transport_storage as storage
 from cai_compute_chain import cai_owned_transport_auth as transport_auth
@@ -50,6 +51,10 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute.validate_cai_owned_transport_local_runtime_auth,
             transport_auth.validate_cai_owned_transport_local_runtime_auth,
+        )
+        self.assertIs(
+            decentralized_compute._decode_cai_owned_transport_batch_payload,
+            payload_codec.decode_cai_owned_transport_batch_payload,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
