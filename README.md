@@ -44,7 +44,6 @@ CAI is useful for:
 - Executor disconnects are handled through job redistribution, retry routes, clear timeouts, and honest explainable errors.
 - A growing blockchain is served by indexes and snapshots; pruning, archiving, snapshot recovery, and load checks are part of alpha stabilization.
 - Consensus and finality for multi-validator scenarios are under a dedicated verification track.
-- The post-quantum path uses hybrid signatures; governance, payout, validator, and transfer paths are checked for required PQ validation. A new founder wallet is only needed if the current seed does not recover the address fixed in genesis.
 - Public audit, load tests, and security review are part of preparation for a mature production network.
 
 ## ⚙️ How it works
