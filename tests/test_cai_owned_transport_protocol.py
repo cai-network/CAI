@@ -8,6 +8,7 @@ from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
 from cai_compute_chain import cai_owned_transport_common as common
 from cai_compute_chain import cai_owned_transport_protocol as protocol
 from cai_compute_chain import cai_owned_transport_storage as storage
+from cai_compute_chain import cai_owned_transport_auth as transport_auth
 from cai_compute_chain import decentralized_compute
 from cai_compute_chain.model import ChainNetwork, WalletPolicy
 
@@ -29,6 +30,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertEqual(
             decentralized_compute.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
             protocol.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
+        )
+        self.assertIs(
+            decentralized_compute.sign_cai_owned_transport_session_offer,
+            transport_auth.sign_cai_owned_transport_session_offer,
+        )
+        self.assertIs(
+            decentralized_compute.validate_cai_owned_transport_payload_signature,
+            transport_auth.validate_cai_owned_transport_payload_signature,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
