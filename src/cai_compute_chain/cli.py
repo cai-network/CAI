@@ -88,12 +88,15 @@ from .model_distribution import (
     build_assignment_fetch_plan_from_store,
     build_chunk_download_tasks_from_fetch_plan,
     build_local_chunk_inventory_payload,
+    build_hf_gguf_model_package_manifest,
     build_gguf_model_package_manifest,
     chunk_download_queue_snapshot,
     chunk_store_snapshot,
+    discover_and_import_hf_model_package_manifest,
     evict_chunks_to_policy_target,
     ensure_assignment_ready_from_store,
     execute_chunk_download_queue,
+    import_model_package_manifest_from_url,
     load_chunk_source_bindings,
     load_local_artifact_bindings,
     list_chunk_download_tasks,
@@ -493,6 +496,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     model_package_ensure_ready_parser.add_argument("--max-tasks", type=int)
+    model_package_cache_all_parser = subparsers.add_parser(
+        "model-package-cache-all",
+        help="Fetch and cache every chunk required to serve a full model package as a public seed",
+    )
+    model_package_cache_all_parser.add_argument("catalog_id")
+    model_package_cache_all_parser.add_argument("version")
+    model_package_cache_all_parser.add_argument("--node-id")
+    model_package_cache_all_parser.add_argument("--max-tasks", type=int)
+    model_package_cache_all_parser.add_argument(
+        "--use-imported-peer-inventory",
+        action="store_true",
+    )
+    model_package_cache_all_parser.add_argument(
+        "--use-imported-seed-inventory",
+        action="store_true",
+    )
     chunk_download_mark_parser = subparsers.add_parser(
         "chunk-download-mark",
         help="Update local chunk download task status",
@@ -592,6 +611,48 @@ def build_parser() -> argparse.ArgumentParser:
     model_package_create_gguf_parser.add_argument("--source-revision", default="main")
     model_package_create_gguf_parser.add_argument("--family", default="")
     model_package_create_gguf_parser.add_argument("--quantization", default="")
+    model_package_create_hf_gguf_parser = subparsers.add_parser(
+        "model-package-create-hf-gguf",
+        help="Build and save a CAI model package manifest from a Hugging Face GGUF artifact using range requests",
+    )
+    model_package_create_hf_gguf_parser.add_argument("model_id")
+    model_package_create_hf_gguf_parser.add_argument("version")
+    model_package_create_hf_gguf_parser.add_argument("--catalog-id")
+    model_package_create_hf_gguf_parser.add_argument("--preferred-filename")
+    model_package_create_hf_gguf_parser.add_argument("--n-layers", type=int)
+    model_package_create_hf_gguf_parser.add_argument(
+        "--package-kind",
+        choices=["public_shared", "private_curated"],
+        default="public_shared",
+    )
+    model_package_create_hf_gguf_parser.add_argument(
+        "--chunk-size-policy",
+        choices=["small", "balanced", "large", "adaptive"],
+        default="adaptive",
+    )
+    model_package_create_hf_gguf_parser.add_argument("--min-chunk-mb", type=int, default=64)
+    model_package_create_hf_gguf_parser.add_argument("--max-chunk-mb", type=int, default=512)
+    model_package_create_hf_gguf_parser.add_argument("--target-chunks", type=int)
+    model_package_create_hf_gguf_parser.add_argument("--source-revision", default="main")
+    model_package_create_hf_gguf_parser.add_argument("--family", default="")
+    model_package_create_hf_gguf_parser.add_argument("--quantization", default="")
+    model_package_create_hf_gguf_parser.add_argument("--timeout-sec", type=int, default=30)
+    model_package_import_url_parser = subparsers.add_parser(
+        "model-package-import-url",
+        help="Import a CAI model package manifest from a URL",
+    )
+    model_package_import_url_parser.add_argument("manifest_url")
+    model_package_import_url_parser.add_argument("--expected-model-id")
+    model_package_import_url_parser.add_argument("--expected-preferred-filename")
+    model_package_import_url_parser.add_argument("--timeout-sec", type=int, default=15)
+    model_package_import_hf_parser = subparsers.add_parser(
+        "model-package-import-hf",
+        help="Discover and import a CAI model package manifest from a Hugging Face model repo",
+    )
+    model_package_import_hf_parser.add_argument("model_id")
+    model_package_import_hf_parser.add_argument("--preferred-filename")
+    model_package_import_hf_parser.add_argument("--source-revision", default="main")
+    model_package_import_hf_parser.add_argument("--timeout-sec", type=int, default=15)
     launch_check_local_port = CaiNetworkConfig().default_api_port
     launch_check_parser = subparsers.add_parser(
         "launch-check", help="Run alpha launch readiness checks"
@@ -1940,6 +2001,29 @@ def _load_chunk_inventory(path: str | None) -> dict[str, tuple[str, ...]] | None
     return normalized
 
 
+def _manifest_total_layer_count(manifest) -> int:
+    for key in ("total_layers", "layer_count", "n_layers"):
+        try:
+            value = int(manifest.metadata.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+
+    layer_ends = [
+        int(chunk.layer_end)
+        for chunk in manifest.chunks
+        if chunk.layer_end is not None and int(chunk.layer_end) > 0
+    ]
+    if layer_ends:
+        return max(layer_ends)
+
+    raise ValueError(
+        "Model package does not expose a total layer count; "
+        "cannot derive a full-model shard assignment."
+    )
+
+
 def handle_chunk_inventory_local(source_id: str, *, source_kind: str) -> str:
     payload = build_local_chunk_inventory_payload(
         source_id,
@@ -2295,6 +2379,77 @@ def handle_model_package_ensure_ready(
     return "\n".join(lines)
 
 
+def handle_model_package_cache_all(
+    catalog_id: str,
+    version: str,
+    *,
+    node_id: str | None,
+    use_imported_peer_inventory: bool,
+    use_imported_seed_inventory: bool,
+    max_tasks: int | None,
+) -> str:
+    manifest = load_model_package_manifest(catalog_id, version)
+    total_layers = _manifest_total_layer_count(manifest)
+    resolved_node_id = str(node_id or "").strip() or "local-model-package-seed"
+    result = ensure_assignment_ready_from_store(
+        manifest,
+        ModelShardAssignment(
+            start_layer=0,
+            end_layer=total_layers,
+            device_rank=0,
+            world_size=1,
+            node_id=resolved_node_id,
+        ),
+        use_imported_peer_inventory=use_imported_peer_inventory,
+        use_imported_seed_inventory=use_imported_seed_inventory,
+        max_tasks=max_tasks,
+    )
+    inventory_path = save_local_chunk_inventory_payload(
+        resolved_node_id,
+        source_kind=ChunkInventorySourceKind.LOCAL_CACHE,
+    )
+    snapshot = chunk_download_queue_snapshot()
+    processed_completed = sum(
+        1
+        for task in result.processed_tasks
+        if task.status == ChunkDownloadTaskStatus.COMPLETED
+    )
+    processed_failed = sum(
+        1
+        for task in result.processed_tasks
+        if task.status == ChunkDownloadTaskStatus.FAILED
+    )
+    lines = dedent(
+        f"""
+        Model package full cache:
+        - catalog_id={catalog_id}
+        - version={version}
+        - source_id={resolved_node_id}
+        - layer_range=0:{total_layers}
+        - initial_ready={str(result.initial_plan.ready).lower()}
+        - final_ready={str(result.final_plan.ready).lower()}
+        - initial_missing_chunks={len(result.initial_plan.coverage.missing_chunk_ids)}
+        - final_missing_chunks={len(result.final_plan.coverage.missing_chunk_ids)}
+        - initial_fetch_bytes={result.initial_plan.estimated_fetch_bytes}
+        - final_fetch_bytes={result.final_plan.estimated_fetch_bytes}
+        - queued_now={len(result.queued_tasks)}
+        - processed_now={len(result.processed_tasks)}
+        - processed_completed={processed_completed}
+        - processed_failed={processed_failed}
+        - local_inventory_path={inventory_path}
+        - queue_tasks={snapshot.stats.task_count}
+        - queue_completed={snapshot.stats.completed_count}
+        - queue_failed={snapshot.stats.failed_count}
+        """
+    ).strip().splitlines()
+    insertion_index = lines.index(f"- queue_tasks={snapshot.stats.task_count}")
+    lines[insertion_index:insertion_index] = _chunk_task_source_lines(
+        "processed",
+        result.processed_tasks,
+    )
+    return "\n".join(lines)
+
+
 def handle_chunk_download_mark(
     task_id: str,
     status: str,
@@ -2490,6 +2645,104 @@ def handle_model_package_create_gguf(
         - chunk_size_policy={manifest.chunk_size_policy}
         """
     ).strip()
+
+
+def handle_model_package_create_hf_gguf(
+    model_id: str,
+    version: str,
+    *,
+    catalog_id: str | None,
+    preferred_filename: str | None,
+    n_layers: int | None,
+    package_kind: str,
+    chunk_size_policy: str,
+    min_chunk_mb: int,
+    max_chunk_mb: int,
+    target_chunks: int | None,
+    source_revision: str,
+    family: str,
+    quantization: str,
+    timeout_sec: int,
+) -> str:
+    manifest = build_hf_gguf_model_package_manifest(
+        model_id=model_id,
+        version=version,
+        catalog_id=catalog_id,
+        preferred_filename=preferred_filename,
+        total_layers=n_layers,
+        package_kind=package_kind,
+        chunk_size_policy=chunk_size_policy,
+        min_chunk_bytes=min_chunk_mb * 1024 * 1024,
+        max_chunk_bytes=max_chunk_mb * 1024 * 1024,
+        target_chunk_count=target_chunks,
+        source_revision=source_revision,
+        family=family,
+        quantization=quantization,
+        timeout_sec=timeout_sec,
+    )
+    saved_path = save_model_package_manifest(manifest)
+    return dedent(
+        f"""
+        Hugging Face GGUF model package manifest created:
+        - catalog_id={manifest.catalog_id}
+        - model_id={manifest.model_id}
+        - version={manifest.version}
+        - manifest_path={saved_path}
+        - file={manifest.preferred_filename or '<unknown>'}
+        - total_size_bytes={manifest.total_size_bytes}
+        - chunk_count={len(manifest.chunks)}
+        - chunk_size_policy={manifest.chunk_size_policy}
+        """
+    ).strip()
+
+
+def _render_imported_model_package_manifest(manifest, saved_from: str) -> str:
+    return dedent(
+        f"""
+        Model package manifest imported:
+        - source={saved_from}
+        - catalog_id={manifest.catalog_id}
+        - model_id={manifest.model_id}
+        - version={manifest.version}
+        - file={manifest.preferred_filename or '<unknown>'}
+        - total_size_bytes={manifest.total_size_bytes}
+        - chunk_count={len(manifest.chunks)}
+        """
+    ).strip()
+
+
+def handle_model_package_import_url(
+    manifest_url: str,
+    *,
+    expected_model_id: str | None,
+    expected_preferred_filename: str | None,
+    timeout_sec: int,
+) -> str:
+    manifest = import_model_package_manifest_from_url(
+        manifest_url,
+        expected_model_id=expected_model_id,
+        expected_preferred_filename=expected_preferred_filename,
+        timeout_sec=timeout_sec,
+    )
+    return _render_imported_model_package_manifest(manifest, manifest_url)
+
+
+def handle_model_package_import_hf(
+    model_id: str,
+    *,
+    preferred_filename: str | None,
+    source_revision: str,
+    timeout_sec: int,
+) -> str:
+    manifest = discover_and_import_hf_model_package_manifest(
+        model_id,
+        preferred_filename=preferred_filename,
+        source_revision=source_revision,
+        timeout_sec=timeout_sec,
+    )
+    if manifest is None:
+        return f"No CAI model package manifest discovered for {model_id}."
+    return _render_imported_model_package_manifest(manifest, f"hf:{model_id}")
 
 
 def handle_chunk_store() -> str:
@@ -4137,6 +4390,19 @@ def main() -> None:
         )
         return
 
+    if args.command == "model-package-cache-all":
+        print(
+            handle_model_package_cache_all(
+                args.catalog_id,
+                args.version,
+                node_id=args.node_id,
+                use_imported_peer_inventory=args.use_imported_peer_inventory,
+                use_imported_seed_inventory=args.use_imported_seed_inventory,
+                max_tasks=args.max_tasks,
+            )
+        )
+        return
+
     if args.command == "chunk-download-mark":
         print(
             handle_chunk_download_mark(
@@ -4181,6 +4447,49 @@ def main() -> None:
                 source_revision=args.source_revision,
                 family=args.family,
                 quantization=args.quantization,
+            )
+        )
+        return
+
+    if args.command == "model-package-create-hf-gguf":
+        print(
+            handle_model_package_create_hf_gguf(
+                args.model_id,
+                args.version,
+                catalog_id=args.catalog_id,
+                preferred_filename=args.preferred_filename,
+                n_layers=args.n_layers,
+                package_kind=args.package_kind,
+                chunk_size_policy=args.chunk_size_policy,
+                min_chunk_mb=args.min_chunk_mb,
+                max_chunk_mb=args.max_chunk_mb,
+                target_chunks=args.target_chunks,
+                source_revision=args.source_revision,
+                family=args.family,
+                quantization=args.quantization,
+                timeout_sec=args.timeout_sec,
+            )
+        )
+        return
+
+    if args.command == "model-package-import-url":
+        print(
+            handle_model_package_import_url(
+                args.manifest_url,
+                expected_model_id=args.expected_model_id,
+                expected_preferred_filename=args.expected_preferred_filename,
+                timeout_sec=args.timeout_sec,
+            )
+        )
+        return
+
+    if args.command == "model-package-import-hf":
+        print(
+            handle_model_package_import_hf(
+                args.model_id,
+                preferred_filename=args.preferred_filename,
+                source_revision=args.source_revision,
+                timeout_sec=args.timeout_sec,
             )
         )
         return

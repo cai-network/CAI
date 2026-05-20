@@ -45,6 +45,23 @@ For uptime, a validator can use active/passive HA replicas under one bonded vali
 
 CAI supports a runtime architecture where model work can be assigned to one executor or split across participants when the selected path benefits from distribution.
 
+Model package manifests describe GGUF artifacts as verified, layer-aware chunks. A seed node can import or create a manifest, cache the full package once, and publish its chunk inventory. Executors then plan only the chunks required for their assigned layer range and fetch missing chunks from peers, storage seeds, or the original Hugging Face artifact when that origin is present in the manifest.
+
+The operator flow is:
+
+1. Create or import a model package manifest.
+2. Cache the full package on at least one seed node.
+3. Publish local chunk inventory from that seed node.
+4. Let executors sync inventory and fetch only the chunks required by their assignment.
+
+Example commands:
+
+```bash
+python -m cai_compute_chain.cli model-package-create-hf-gguf Qwen/Qwen2.5-0.5B-Instruct-GGUF 0.1.0 --preferred-filename qwen2.5-0.5b-instruct-q4_k_m.gguf
+python -m cai_compute_chain.cli model-package-cache-all Qwen--Qwen2.5-0.5B-Instruct-GGUF 0.1.0 --node-id seed-node-1
+python -m cai_compute_chain.cli chunk-inventory-local seed-node-1 --source-kind local_cache
+```
+
 The current alpha hardening track focuses on:
 
 - stable PC-to-PC routing between physical machines;

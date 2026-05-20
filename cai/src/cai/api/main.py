@@ -5396,6 +5396,9 @@ class API:
                     gguf_architecture=card.gguf_architecture,
                     shard_compatibility=card.shard_compatibility,
                     layer_range_supported=card.layer_range_supported,
+                    model_package_manifest_url=card.model_package_manifest_url,
+                    model_package_catalog_id=card.model_package_catalog_id,
+                    model_package_version=card.model_package_version,
                     layer_range_probe_abi=card.layer_range_probe_abi,
                     layer_range_probe_report=card.layer_range_probe_report,
                     layer_range_equivalence_probe_report=(

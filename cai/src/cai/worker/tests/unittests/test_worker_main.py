@@ -25,6 +25,7 @@ from cai.utils.keyed_backoff import KeyedBackoff
 from cai.worker.main import (
     CAI_CHUNK_SEED_URLS_ENV,
     Worker,
+    _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS,
     _cai_owned_transport_adapter,
     _cai_owned_transport_runtime_requires_production_handoff,
     _prefetch_chunk_backed_bootstrap_chunks,
@@ -221,6 +222,120 @@ def test_try_prepare_chunk_backed_llama_cpp_download_returns_completed() -> None
     assert recorded_paths == [(ModelId("Qwen/Qwen3-0.6B-GGUF"), fake_materialized.output_path)]
     assert recorded_sync_calls == [
         ({"nodeIdentities": {}}, "http://127.0.0.1:52415", "peer_cache", True)
+    ]
+
+
+def test_try_prepare_chunk_backed_llama_cpp_download_imports_remote_manifest() -> None:
+    @dataclass(frozen=True)
+    class FakeAssignment:
+        start_layer: int
+        end_layer: int
+        device_rank: int = 0
+        world_size: int = 1
+        node_id: str | None = None
+
+    fake_manifest = SimpleNamespace(catalog_id="demo", version="v1")
+    fake_materialized = SimpleNamespace(output_path=str(Path("D:/tmp/partial.gguf")))
+    import_calls: list[dict[str, object]] = []
+
+    class FakeModelDistributionModule:
+        ModelShardAssignment = FakeAssignment
+
+        @staticmethod
+        def select_model_package_manifest_for_model(model_id: str):
+            assert model_id == "Qwen/Qwen3-0.6B-GGUF"
+            return None
+
+        @staticmethod
+        def import_model_package_manifest_from_url(manifest_url: str, **kwargs):
+            import_calls.append({"manifest_url": manifest_url, **kwargs})
+            return fake_manifest
+
+        @staticmethod
+        def ensure_assignment_ready_from_store(
+            manifest,
+            assignment,
+            *,
+            use_imported_peer_inventory: bool,
+            use_imported_seed_inventory: bool,
+        ):
+            assert manifest is fake_manifest
+            assert assignment.node_id == "node-a"
+            assert use_imported_peer_inventory is True
+            assert use_imported_seed_inventory is True
+            return SimpleNamespace(ready=True)
+
+        @staticmethod
+        def materialize_default_assignment_artifact_from_store(manifest, assignment):
+            assert manifest is fake_manifest
+            return fake_materialized
+
+        @staticmethod
+        def remember_recent_shard_hints(node_id, hints):
+            return SimpleNamespace(
+                hints_received=len(hints),
+                records_upserted=len(hints),
+                records_pruned=0,
+                stored_records=len(hints),
+            )
+
+        @staticmethod
+        def sync_chunk_inventory_from_cai_peers(
+            *,
+            state_payload,
+            CAI_url: str,
+            source_kind: str,
+            prune_missing_peers: bool,
+        ):
+            return SimpleNamespace(imported_payloads=0)
+
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "cai_compute_chain.model_distribution":
+            return FakeModelDistributionModule
+        return real_import_module(name)
+
+    shard = PipelineShardMetadata(
+        model_card=ModelCard(
+            model_id=ModelId("Qwen/Qwen3-0.6B-GGUF"),
+            storage_size=Memory.from_mb(1),
+            n_layers=28,
+            hidden_size=1,
+            supports_tensor=False,
+            tasks=[ModelTask.TextGeneration],
+            inference_backend=InferenceBackend.LlamaCpp,
+            preferred_filename="qwen3.gguf",
+            model_package_manifest_url="https://example.test/manifest.json",
+        ),
+        device_rank=0,
+        world_size=1,
+        start_layer=0,
+        end_layer=28,
+        n_layers=28,
+    )
+
+    with patch("cai.worker.main.importlib.import_module", fake_import_module), patch(
+        "cai.worker.main.set_custom_model_local_path",
+        lambda model_id, local_path: Path(local_path),
+    ), patch("cai.worker.main.urlopen") as urlopen_mock:
+        _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.clear()
+        urlopen_mock.return_value.__enter__.return_value.read.return_value = b'{"nodeIdentities": {}}'
+        completed = _try_prepare_chunk_backed_llama_cpp_download(
+            NodeId("node-a"),
+            shard,
+            api_port=52415,
+        )
+        _REMOTE_MODEL_PACKAGE_IMPORT_ATTEMPTS.clear()
+
+    assert completed is not None
+    assert completed.model_directory == fake_materialized.output_path
+    assert import_calls == [
+        {
+            "manifest_url": "https://example.test/manifest.json",
+            "expected_model_id": "Qwen/Qwen3-0.6B-GGUF",
+            "expected_preferred_filename": "qwen3.gguf",
+        }
     ]
 
 

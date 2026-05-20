@@ -3466,6 +3466,36 @@ def _merge_chunk_cache_model_shard_inventory(
         entry["catalogId"] = catalog_id
         entry["manifestVersion"] = version
         chunks = getattr(manifest, "chunks", []) or []
+        total_chunk_ids = {
+            str(getattr(chunk, "chunk_id", "") or "").strip()
+            for chunk in chunks
+            if str(getattr(chunk, "chunk_id", "") or "").strip()
+        }
+        cached_chunk_count = len(present_chunk_ids & total_chunk_ids)
+        missing_chunk_count = max(len(total_chunk_ids) - cached_chunk_count, 0)
+        cached_bytes = sum(
+            int(getattr(record, "size_bytes", 0) or 0)
+            for chunk_id, record in manifest_records.items()
+            if chunk_id in total_chunk_ids
+        )
+        total_bytes = int(getattr(manifest, "total_size_bytes", 0) or 0)
+        full_cache_ready = bool(total_chunk_ids and missing_chunk_count == 0)
+        chunk_cache_summary = {
+            "cachedChunkCount": cached_chunk_count,
+            "totalChunkCount": len(total_chunk_ids),
+            "missingChunkCount": missing_chunk_count,
+            "cachedBytes": cached_bytes,
+            "totalBytes": total_bytes,
+            "fullCacheReady": full_cache_ready,
+            "defaultChunkCoverageReady": default_ready,
+        }
+        entry["chunkCache"] = chunk_cache_summary
+        entry["cachedChunkCount"] = cached_chunk_count
+        entry["totalChunkCount"] = len(total_chunk_ids)
+        entry["missingChunkCount"] = missing_chunk_count
+        entry["cachedBytes"] = cached_bytes
+        entry["totalBytes"] = total_bytes
+        entry["fullCacheReady"] = full_cache_ready
         for chunk in chunks:
             chunk_id = str(getattr(chunk, "chunk_id", "") or "").strip()
             if chunk_id not in manifest_records:

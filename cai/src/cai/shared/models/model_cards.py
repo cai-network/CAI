@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path as FsPath
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import aiofiles
 import aiofiles.os as aios
@@ -62,6 +63,18 @@ _GGUF_SHARD_POLICY_FIELD_DEFAULTS: dict[str, object] = {
     "decode_state_format": None,
     "shard_compatibility_reason": "",
 }
+_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS = (
+    "cai-model-package-manifest.json",
+    "cai_model_package_manifest.json",
+    "model-package-manifest.json",
+    "model_package_manifest.json",
+    "model-package.json",
+    "manifest.cai.json",
+    ".cai/model-package-manifest.json",
+    ".cai/model_package_manifest.json",
+    ".cai/model-package.json",
+    ".cai/manifest.json",
+)
 
 
 def _normalize_local_model_source_path(local_path: str | FsPath) -> FsPath:
@@ -240,6 +253,69 @@ def _select_preferred_gguf_filename(filenames: list[str]) -> str | None:
     return sorted(filenames)[0]
 
 
+def _model_package_manifest_candidates_for_filename(
+    preferred_filename: str | None,
+) -> tuple[str, ...]:
+    clean = str(preferred_filename or "").replace("\\", "/").strip("/")
+    if not clean:
+        return ()
+    path = FsPath(clean)
+    parent = "" if str(path.parent) == "." else str(path.parent).replace("\\", "/")
+    stem = path.name[:-5] if path.name.lower().endswith(".gguf") else path.name
+    names = (
+        f"{stem}.cai-manifest.json",
+        f"{stem}.model-package.json",
+        f"{stem}.model-package-manifest.json",
+        f"{path.name}.cai-manifest.json",
+        f"{path.name}.model-package.json",
+    )
+    if not parent:
+        return names
+    return tuple(f"{parent}/{name}" for name in names)
+
+
+def _select_hf_model_package_manifest_path(
+    filenames: list[str],
+    *,
+    preferred_filename: str | None,
+) -> str | None:
+    normalized = {
+        str(filename).replace("\\", "/").strip("/"): str(filename)
+        for filename in filenames
+        if str(filename).strip()
+    }
+    ordered_candidates = (
+        *_model_package_manifest_candidates_for_filename(preferred_filename),
+        *_MODEL_PACKAGE_MANIFEST_CANDIDATE_PATHS,
+    )
+    for candidate in ordered_candidates:
+        clean = str(candidate).replace("\\", "/").strip("/")
+        if clean in normalized:
+            return normalized[clean]
+
+    for clean, original in normalized.items():
+        basename = clean.lower().rsplit("/", 1)[-1]
+        if (
+            basename.endswith(".cai-manifest.json")
+            or basename.endswith(".model-package.json")
+            or basename.endswith(".model-package-manifest.json")
+        ):
+            return original
+    return None
+
+
+def _hf_resolve_url(
+    *,
+    repo_id: str,
+    revision: str,
+    relative_path: str,
+) -> str:
+    repo_segment = quote(str(repo_id).strip(), safe="/")
+    revision_segment = quote(str(revision or "main").strip() or "main", safe="")
+    path_segment = quote(str(relative_path).replace("\\", "/").strip("/"), safe="/")
+    return f"https://huggingface.co/{repo_segment}/resolve/{revision_segment}/{path_segment}"
+
+
 def _infer_gguf_layer_count(
     *,
     model_id: ModelId,
@@ -283,6 +359,11 @@ def _infer_gguf_layer_count(
 
 
 def _build_hf_gguf_model_card(model_id: ModelId, info: Any) -> "ModelCard":
+    sibling_filenames = [
+        str(getattr(sibling, "rfilename", ""))
+        for sibling in getattr(info, "siblings", [])
+        if str(getattr(sibling, "rfilename", "")).strip()
+    ]
     gguf_files = [
         sibling
         for sibling in getattr(info, "siblings", [])
@@ -311,6 +392,11 @@ def _build_hf_gguf_model_card(model_id: ModelId, info: Any) -> "ModelCard":
     family = str(gguf_metadata.get("architecture", "") or "")
     if not family:
         family = _derive_family_from_filename(preferred_filename)
+    manifest_path = _select_hf_model_package_manifest_path(
+        sibling_filenames,
+        preferred_filename=preferred_filename,
+    )
+    revision = str(getattr(info, "sha", "") or "main").strip() or "main"
 
     return ModelCard(
         model_id=ModelId(model_id),
@@ -332,6 +418,17 @@ def _build_hf_gguf_model_card(model_id: ModelId, info: Any) -> "ModelCard":
         quantization=_derive_quantization_from_filename(preferred_filename),
         base_model=_extract_base_model_from_tags(getattr(info, "tags", None)),
         preferred_filename=preferred_filename,
+        model_package_manifest_url=(
+            _hf_resolve_url(
+                repo_id=str(model_id),
+                revision=revision,
+                relative_path=manifest_path,
+            )
+            if manifest_path
+            else None
+        ),
+        model_package_catalog_id=str(model_id).replace("/", "--") if manifest_path else None,
+        model_package_version=revision if manifest_path else None,
     )
 
 
@@ -439,6 +536,9 @@ class ModelCard(CamelCaseModel):
     is_custom: bool = False
     inference_backend: InferenceBackend = InferenceBackend.LlamaCpp
     preferred_filename: str | None = None
+    model_package_manifest_url: str | None = None
+    model_package_catalog_id: str | None = None
+    model_package_version: str | None = None
     vision: VisionCardConfig | None = None
     gguf_architecture: str = ""
     shard_compatibility: str = ""

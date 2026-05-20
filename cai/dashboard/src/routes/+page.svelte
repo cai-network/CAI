@@ -72,6 +72,7 @@ SPDX-License-Identifier: Apache-2.0
     checkCaiUpdate,
     applyCaiUpdate,
     CAI_WALLET_ACCESS_REQUIRED_EVENT,
+    type CaiModelShardInventoryEntry,
     type DownloadProgress,
     type PlacementPreview,
   } from "$lib/stores/app.svelte";
@@ -1217,6 +1218,9 @@ SPDX-License-Identifier: Apache-2.0
       gguf_architecture?: string;
       shard_compatibility?: string;
       layer_range_supported?: boolean;
+      model_package_manifest_url?: string | null;
+      model_package_catalog_id?: string | null;
+      model_package_version?: string | null;
       layer_range_probe_report?: string | null;
       layer_range_equivalence_probe_report?: string | null;
       shard_compatibility_reason?: string;
@@ -2613,6 +2617,18 @@ SPDX-License-Identifier: Apache-2.0
     perNode: NodeDownloadStatus[];
   } {
     return collectDownloadStatus(modelId, nodeIds);
+  }
+
+  function getModelPackageCacheStatus(
+    modelId: string | null | undefined,
+  ): CaiModelShardInventoryEntry | null {
+    const cleanModelId = String(modelId || "").trim();
+    if (!cleanModelId) return null;
+    const inventory =
+      caiData?.worker?.modelShardInventory ??
+      caiData?.worker?.model_shard_inventory ??
+      {};
+    return inventory[cleanModelId] ?? null;
   }
 
   // Helper to get download status for an instance
@@ -7147,6 +7163,9 @@ SPDX-License-Identifier: Apache-2.0
                           {tags}
                           {apiPreview}
                           modelIdOverride={apiPreview.model_id}
+                          modelPackageCache={getModelPackageCacheStatus(
+                            apiPreview.model_id ?? selectedModel.id,
+                          )}
                         />
                       </div>
                     {/each}
