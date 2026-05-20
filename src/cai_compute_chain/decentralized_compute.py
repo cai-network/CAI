@@ -57,6 +57,11 @@ from .cai_owned_transport_common import (
     parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
     require_safe_transport_file_id as _require_safe_transport_file_id,
 )
+from .cai_owned_transport_ids import (
+    cai_owned_transport_batch_id as _cai_owned_transport_batch_id,
+    cai_owned_transport_dag_hash as _cai_owned_transport_dag_hash,
+    cai_owned_transport_stage_id as _cai_owned_transport_stage_id,
+)
 from .cai_owned_transport_payload_codec import (
     cai_owned_transport_encoded_payload_fields as _cai_owned_transport_encoded_payload_fields,
     decode_cai_owned_transport_batch_payload as _decode_cai_owned_transport_batch_payload,
@@ -7186,56 +7191,6 @@ def _parse_cai_owned_transport_overlay_url(value: str) -> tuple[str, str] | None
     return relay_url, target_node_id
 
 
-def _cai_owned_transport_batch_id(
-    *,
-    session_id: str,
-    phase: str,
-    source_node_id: str,
-    sink_node_id: str,
-    sequence: int,
-    payload_sha256_hex: str,
-) -> str:
-    batch_fingerprint = json.dumps(
-        {
-            "payloadSha256Hex": str(payload_sha256_hex or "").strip().lower(),
-            "phase": str(phase or "").strip(),
-            "sequence": max(0, int(sequence or 0)),
-            "sessionId": str(session_id or "").strip(),
-            "sinkNodeId": str(sink_node_id or "").strip(),
-            "sourceNodeId": str(source_node_id or "").strip(),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"caibatch_{hashlib.sha256(batch_fingerprint).hexdigest()[:24]}"
-
-
-def _cai_owned_transport_stage_id(
-    *,
-    session_id: str,
-    phase: str,
-    sequence: int,
-    executor_node_id: str,
-    layer_start: int,
-    layer_end: int,
-) -> str:
-    stage_fingerprint = json.dumps(
-        {
-            "executorNodeId": str(executor_node_id or "").strip(),
-            "layerEnd": int(layer_end),
-            "layerStart": int(layer_start),
-            "phase": str(phase or "").strip(),
-            "protocol": CAI_OWNED_TRANSPORT_PROTOCOL,
-            "protocolVersion": CAI_OWNED_TRANSPORT_PROTOCOL_VERSION,
-            "sequence": max(0, int(sequence or 0)),
-            "sessionId": str(session_id or "").strip(),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"caistage_{hashlib.sha256(stage_fingerprint).hexdigest()[:24]}"
-
-
 def _cai_owned_transport_layer_ranges(
     executor_node_ids: Sequence[str],
     total_layer_count: int,
@@ -7333,17 +7288,6 @@ def _normalize_cai_owned_transport_shard_ranges(
             "CAI-owned transport execution DAG shard ranges do not cover total layer count."
         )
     return normalized
-
-
-def _cai_owned_transport_dag_hash(dag: dict[str, Any]) -> str:
-    payload = {
-        key: value
-        for key, value in dag.items()
-        if key != "dagHashSha256Hex"
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
 def _cai_owned_transport_output_route_plan_from_dag(
