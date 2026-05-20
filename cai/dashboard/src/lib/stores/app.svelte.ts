@@ -317,6 +317,29 @@ export interface CaiExecutionAttemptStatus {
   responseDurationMs?: number | null;
 }
 
+export interface CaiModelShardInventoryEntry {
+  modelId?: string | null;
+  source?: string | null;
+  status?: string | null;
+  catalogId?: string | null;
+  manifestVersion?: string | null;
+  cachedChunkCount?: number | null;
+  totalChunkCount?: number | null;
+  missingChunkCount?: number | null;
+  cachedBytes?: number | null;
+  totalBytes?: number | null;
+  fullCacheReady?: boolean;
+  chunkCache?: {
+    cachedChunkCount?: number | null;
+    totalChunkCount?: number | null;
+    missingChunkCount?: number | null;
+    cachedBytes?: number | null;
+    totalBytes?: number | null;
+    fullCacheReady?: boolean;
+    defaultChunkCoverageReady?: boolean;
+  } | null;
+}
+
 export interface CaiSummary {
   available: boolean;
   error?: string;
@@ -484,6 +507,8 @@ export interface CaiSummary {
     };
     caiOwnedTransport?: CaiOwnedTransportReadiness | null;
     cai_owned_transport?: CaiOwnedTransportReadiness | null;
+    modelShardInventory?: Record<string, CaiModelShardInventoryEntry>;
+    model_shard_inventory?: Record<string, CaiModelShardInventoryEntry>;
   };
   reward?: {
     payout_records?: number;

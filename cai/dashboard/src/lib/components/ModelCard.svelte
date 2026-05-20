@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
   import { tr } from "$lib/stores/i18n.svelte";
 
   import type {
+    CaiModelShardInventoryEntry,
     DownloadProgress,
     NodeInfo,
     PlacementPreview,
@@ -46,6 +47,7 @@ SPDX-License-Identifier: Apache-2.0
     tags?: string[];
     apiPreview?: PlacementPreview | null;
     modelIdOverride?: string | null;
+    modelPackageCache?: CaiModelShardInventoryEntry | null;
   }
 
   let {
@@ -59,6 +61,7 @@ SPDX-License-Identifier: Apache-2.0
     tags = [],
     apiPreview = null,
     modelIdOverride = null,
+    modelPackageCache = null,
   }: Props = $props();
 
   // Estimate memory requirements from model name
@@ -214,6 +217,28 @@ SPDX-License-Identifier: Apache-2.0
   const hasModelPackageManifest = $derived(
     Boolean(model.model_package_manifest_url || model.model_package_catalog_id),
   );
+  const packageCacheSummary = $derived(
+    modelPackageCache?.chunkCache ?? modelPackageCache ?? null,
+  );
+  const hasPackageCacheSummary = $derived(
+    Boolean(
+      packageCacheSummary &&
+        typeof packageCacheSummary.totalChunkCount === "number" &&
+        packageCacheSummary.totalChunkCount > 0,
+    ),
+  );
+  const packageCacheLabel = $derived.by(() => {
+    if (!packageCacheSummary) return "";
+    const cached = Math.max(0, Number(packageCacheSummary.cachedChunkCount ?? 0));
+    const total = Math.max(0, Number(packageCacheSummary.totalChunkCount ?? 0));
+    if (packageCacheSummary.fullCacheReady) {
+      return tr("Seed cache ready");
+    }
+    if (total > 0) {
+      return `${tr("Chunks")} ${cached}/${total}`;
+    }
+    return tr("Chunk cache");
+  });
 
   const nodeList = $derived(() => {
     const ids = new Set(Object.keys(nodes));
@@ -372,6 +397,16 @@ SPDX-License-Identifier: Apache-2.0
           title={tr("This model publishes a CAI chunk manifest, so workers can prepare only the assigned GGUF chunks.")}
         >
           {tr("Chunk manifest")}
+        </span>
+      {/if}
+      {#if hasPackageCacheSummary}
+        <span
+          class="px-1.5 py-0.5 text-xs font-mono tracking-wider uppercase border {packageCacheSummary?.fullCacheReady
+            ? 'bg-green-500/15 text-green-300 border-green-500/25'
+            : 'bg-blue-500/15 text-blue-300 border-blue-500/25'}"
+          title={tr("Local cache coverage for this CAI model package. A ready seed cache can serve chunks to other executors.")}
+        >
+          {packageCacheLabel}
         </span>
       {/if}
     </div>
