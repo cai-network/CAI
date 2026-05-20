@@ -14,6 +14,7 @@ from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
 from .decentralized_compute import cai_owned_transport_runtime_readiness
+from .local_json_store import atomic_write_json_array_file, read_json_array_file
 from .model import NetworkModelPolicy, WalletPolicy, normalize_network_model_id
 from .peer_payload import (
     add_peer_payload_metadata,
@@ -96,7 +97,7 @@ def list_node_capabilities(
     path = node_capabilities_file_path(policy)
     if not path.exists():
         return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = read_json_array_file(path, heal_corrupt=True)
     records: list[NodeCapabilityRecord] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -132,10 +133,7 @@ def save_node_capabilities(
     policy: WalletPolicy | None = None,
 ) -> None:
     path = node_capabilities_file_path(policy)
-    path.write_text(
-        json.dumps([asdict(item) for item in records], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json_array_file(path, [asdict(item) for item in records])
 
 
 def export_node_capabilities_payload(

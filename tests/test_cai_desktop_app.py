@@ -181,7 +181,7 @@ class CaiDesktopAppTests(unittest.TestCase):
                 env["CAI_TASK_LEVEL_TRANSPORT_REQUIRE_PROVEN_DATA_PLANE_ROUTE"],
                 "1",
             )
-            self.assertEqual(env["CAI_TASK_LEVEL_TRANSPORT_EXECUTOR_COUNT"], "2")
+            self.assertEqual(env["CAI_TASK_LEVEL_TRANSPORT_EXECUTOR_COUNT"], "1")
             self.assertEqual(env["CAI_OWNED_TRANSPORT_GENERATION_ENABLED"], "1")
             self.assertEqual(env["CAI_OWNED_TRANSPORT_GENERATION_REQUIRED"], "1")
             self.assertEqual(

@@ -152,6 +152,12 @@ def read_json_array_file(path: Path, *, heal_corrupt: bool = False) -> list[Any]
     except OSError:
         return []
     if not raw_bytes:
+        if heal_corrupt:
+            _heal_file_if_unchanged(
+                path,
+                expected_bytes=raw_bytes,
+                recovered_text="[]",
+            )
         return []
     try:
         text = raw_bytes.decode("utf-8")
@@ -164,6 +170,12 @@ def read_json_array_file(path: Path, *, heal_corrupt: bool = False) -> list[Any]
             )
         return []
     if not text.strip():
+        if heal_corrupt:
+            _heal_file_if_unchanged(
+                path,
+                expected_bytes=raw_bytes,
+                recovered_text="[]",
+            )
         return []
     try:
         raw = json.loads(text)
@@ -204,6 +216,12 @@ def read_json_object_file(path: Path, *, heal_corrupt: bool = False) -> dict[str
     except OSError:
         return {}
     if not raw_bytes:
+        if heal_corrupt:
+            _heal_file_if_unchanged(
+                path,
+                expected_bytes=raw_bytes,
+                recovered_text="{}",
+            )
         return {}
     try:
         text = raw_bytes.decode("utf-8")
@@ -216,6 +234,12 @@ def read_json_object_file(path: Path, *, heal_corrupt: bool = False) -> dict[str
             )
         return {}
     if not text.strip():
+        if heal_corrupt:
+            _heal_file_if_unchanged(
+                path,
+                expected_bytes=raw_bytes,
+                recovered_text="{}",
+            )
         return {}
     try:
         raw = json.loads(text)

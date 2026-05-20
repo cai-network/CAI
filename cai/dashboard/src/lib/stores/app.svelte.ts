@@ -2942,22 +2942,6 @@ class AppStore {
     return compatibleModelIds.size > 0 && compatibleModelIds.has(normalizedModelId);
   }
 
-  private isCaiMeteredTransportReady(): boolean {
-    const worker = this.caiSummary?.worker;
-    const workerReadiness =
-      worker?.readiness?.caiOwnedTransport ??
-      worker?.caiOwnedTransport ??
-      worker?.cai_owned_transport ??
-      null;
-    const readiness =
-      this.networkSummary?.caiOwnedTransportReadiness ?? workerReadiness;
-    const status = readiness?.status?.trim().toLowerCase() ?? "";
-
-    return Boolean(
-      readiness?.runtimeReady || readiness?.ready || status === "ready",
-    );
-  }
-
   private resolvePreferredTextChatModel(
     modelId?: string | null,
   ): string | null {
@@ -3070,10 +3054,7 @@ class AppStore {
     if (!this.isWorkerCompatibleTextModelId(meteredModelId)) {
       return false;
     }
-    if (this.hasRunningInstanceForModel(meteredModelId)) {
-      return false;
-    }
-    return this.isCaiMeteredTransportReady();
+    return true;
   }
 
   private requireCaiWalletForMeteredChat(

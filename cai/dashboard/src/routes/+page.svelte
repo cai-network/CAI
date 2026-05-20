@@ -1487,7 +1487,6 @@ SPDX-License-Identifier: Apache-2.0
   ): string | null {
     if (!isCaiDirectTextChatCandidate(modelId, files)) return null;
     if (!canRouteCaiDirectTextModel(modelId)) return null;
-    if (!isCaiOwnedTransportRuntimeReady()) return null;
     if (!caiData?.available) return null;
     if (!caiData.wallet?.has_active_wallet) {
       return t("error.walletCreate");
@@ -1512,8 +1511,7 @@ SPDX-License-Identifier: Apache-2.0
     if (
       !resolvedModelId ||
       !isCaiDirectTextChatCandidate(resolvedModelId, files) ||
-      !canRouteCaiDirectTextModel(resolvedModelId) ||
-      !isCaiOwnedTransportRuntimeReady()
+      !canRouteCaiDirectTextModel(resolvedModelId)
     ) {
       return false;
     }

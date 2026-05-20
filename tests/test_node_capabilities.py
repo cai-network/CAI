@@ -233,6 +233,14 @@ class NodeCapabilityTests(unittest.TestCase):
             ["node-local"],
         )
 
+    def test_list_node_capabilities_recovers_empty_store(self) -> None:
+        path = node_capabilities_file_path(self.policy)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+        self.assertEqual(list_node_capabilities(self.policy), [])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), [])
+
     def test_signed_worker_capability_becomes_verified(self) -> None:
         signing_seed = generate_signing_seed()
         public_key_b64 = public_key_b64_from_seed(signing_seed)

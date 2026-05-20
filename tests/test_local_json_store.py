@@ -76,11 +76,25 @@ class LocalJsonStoreTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             path = Path(tempdir) / "chain.json"
+            path.write_text("", encoding="utf-8")
+            self.assertEqual(read_json_object_file(path, heal_corrupt=True), {})
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {})
+
             path.write_text('{"blocks": []}\n\n', encoding="utf-8")
             self.assertEqual(
                 read_json_object_file(path, heal_corrupt=True),
                 {"blocks": []},
             )
+
+    def test_read_json_array_file_recovers_empty_payload(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "records.json"
+            path.write_text("", encoding="utf-8")
+
+            self.assertEqual(read_json_array_file(path, heal_corrupt=True), [])
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), [])
 
     def test_atomic_write_json_object_file_writes_complete_object_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

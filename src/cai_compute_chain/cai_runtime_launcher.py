@@ -113,17 +113,15 @@ def set_cai_owned_task_level_env_defaults(
     config: CaiNetworkConfig,
     network_model_policy: NetworkModelPolicy | None = None,
 ) -> None:
-    active_policy = network_model_policy or NetworkModelPolicy()
-
     def set_default(name: str, value: object) -> None:
         if str(env.get(name) or "").strip():
             return
         env[name] = str(value)
 
-    # User-facing inference should not silently fall back to a single
-    # full-model llama.cpp worker when a shardable GGUF path is available. The
-    # CAI-owned routes below require production runtime readiness, shard
-    # readiness, and a proven data-plane route before settlement can happen.
+    # User-facing inference must stay on the metered CAI job path so receipt,
+    # settlement, and rewards are produced even when one executor is enough for
+    # the selected model. Multi-executor routes are still selected by the
+    # transport planner when policy and live readiness require them.
     set_default("CAI_ENABLE_TASK_LEVEL_TRANSPORT_JOBS", "1")
     set_default("CAI_REQUIRE_TASK_LEVEL_TRANSPORT_JOBS", "1")
     set_default("CAI_ALLOW_TASK_LEVEL_TRANSPORT_PRIVATE_MODELS", "1")
@@ -131,10 +129,7 @@ def set_cai_owned_task_level_env_defaults(
     set_default("CAI_TASK_LEVEL_TRANSPORT_REQUIRE_SHARD_READINESS", "1")
     set_default("CAI_TASK_LEVEL_TRANSPORT_REQUIRE_DATA_PLANE_ROUTE", "1")
     set_default("CAI_TASK_LEVEL_TRANSPORT_REQUIRE_PROVEN_DATA_PLANE_ROUTE", "1")
-    set_default(
-        "CAI_TASK_LEVEL_TRANSPORT_EXECUTOR_COUNT",
-        max(2, int(active_policy.minimum_worker_shards)),
-    )
+    set_default("CAI_TASK_LEVEL_TRANSPORT_EXECUTOR_COUNT", "1")
     set_default("CAI_TASK_LEVEL_TRANSPORT_TIMEOUT_SEC", "25")
     set_default("CAI_TASK_LEVEL_TRANSPORT_WAIT_TIMEOUT_SEC", "300")
     set_default("CAI_OWNED_TRANSPORT_GENERATION_ENABLED", "1")
