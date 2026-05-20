@@ -39,6 +39,18 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             decentralized_compute.validate_cai_owned_transport_payload_signature,
             transport_auth.validate_cai_owned_transport_payload_signature,
         )
+        self.assertIs(
+            decentralized_compute.cai_owned_transport_auth_headers,
+            transport_auth.cai_owned_transport_auth_headers,
+        )
+        self.assertIs(
+            decentralized_compute.validate_cai_owned_transport_request_auth,
+            transport_auth.validate_cai_owned_transport_request_auth,
+        )
+        self.assertIs(
+            decentralized_compute.validate_cai_owned_transport_local_runtime_auth,
+            transport_auth.validate_cai_owned_transport_local_runtime_auth,
+        )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
         self.assertEqual(

@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 import gzip
 import hashlib
 import json
-import os
 import secrets
 import time
 from pathlib import Path
@@ -32,13 +31,19 @@ from .route_health import (
     llama_cpp_compute_cell_profile_for_path,
 )
 from .cai_owned_transport_auth import (
+    cai_owned_transport_auth_headers,
+    cai_owned_transport_auth_required,
+    cai_owned_transport_json_headers as _cai_owned_transport_json_headers,
     cai_owned_transport_peer_signing_kwargs,
+    require_cai_owned_transport_local_runtime_auth as _require_cai_owned_transport_local_runtime_auth,
     sign_cai_owned_transport_batch_envelope,
     sign_cai_owned_transport_execution_proof,
     sign_cai_owned_transport_payload,
     sign_cai_owned_transport_session_offer,
     sign_cai_owned_transport_shard_receipt,
+    validate_cai_owned_transport_local_runtime_auth,
     validate_cai_owned_transport_payload_signature,
+    validate_cai_owned_transport_request_auth,
 )
 from .cai_owned_transport_peer_urls import (
     cai_owned_transport_peer_url_priority as _cai_owned_transport_peer_url_priority,
@@ -57,12 +62,9 @@ from .cai_owned_transport_protocol import (
     CAI_OWNED_LLM_HANDOFF_ABI,
     CAI_OWNED_LLM_HANDOFF_SCHEMA_VERSION,
     CAI_OWNED_LLM_HANDOFF_TENSOR_ENCODINGS,
-    CAI_OWNED_TRANSPORT_AUTH_HEADER,
-    CAI_OWNED_TRANSPORT_AUTH_TOKEN_ENV,
     CAI_OWNED_TRANSPORT_BATCH_ENVELOPE_MAX_AGE_SECONDS,
     CAI_OWNED_TRANSPORT_BATCH_ENVELOPE_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_BATCH_PHASES,
-    CAI_OWNED_TRANSPORT_CHAIN_HEADER,
     CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS,
     CAI_OWNED_TRANSPORT_DEFAULT_BATCH_CLAIM_TIMEOUT_SECONDS,
     CAI_OWNED_TRANSPORT_DEFAULT_BATCH_LEASE_SECONDS,
@@ -73,7 +75,6 @@ from .cai_owned_transport_protocol import (
     CAI_OWNED_TRANSPORT_FRAME_KINDS,
     CAI_OWNED_TRANSPORT_FRAME_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_HASH_CHAIN_SCHEMA_VERSION,
-    CAI_OWNED_TRANSPORT_LOCAL_RUNTIME_TOKEN_ENV,
     CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX,
     CAI_OWNED_TRANSPORT_PAYLOAD_COMPRESSIONS,
     CAI_OWNED_TRANSPORT_PAYLOAD_RETENTION_SECONDS,
@@ -81,8 +82,6 @@ from .cai_owned_transport_protocol import (
     CAI_OWNED_TRANSPORT_PROTOCOL,
     CAI_OWNED_TRANSPORT_PROTOCOL_VERSION,
     CAI_OWNED_TRANSPORT_REPLAY_CACHE_RETENTION_SECONDS,
-    CAI_OWNED_TRANSPORT_REQUIRE_AUTH_ENV,
-    CAI_OWNED_TRANSPORT_REQUIRE_LOCAL_RUNTIME_AUTH_ENV,
     CAI_OWNED_TRANSPORT_REQUIRED_CAPABILITIES,
     CAI_OWNED_TRANSPORT_RUNTIME_PHASES,
     CAI_OWNED_TRANSPORT_RUNTIME_VERSION,
@@ -139,153 +138,6 @@ def _validate_cai_owned_transport_created_at(
     ) < reference_now:
         return False, f"CAI-owned transport {payload_name} has expired."
     return True, None
-
-
-def cai_owned_transport_auth_required(value: bool | str | None = None) -> bool:
-    if isinstance(value, bool):
-        return value
-    raw = str(
-        value
-        if value is not None
-        else os.getenv(CAI_OWNED_TRANSPORT_REQUIRE_AUTH_ENV, "")
-    ).strip().lower()
-    return raw in {"1", "true", "yes", "on", "strict", "required"}
-
-
-def cai_owned_transport_auth_headers(
-    *,
-    chain_id: str | None = None,
-    auth_token: str | None = None,
-    require_auth: bool | str | None = None,
-    policy: WalletPolicy | None = None,
-) -> dict[str, str]:
-    resolved_chain_id = _cai_owned_transport_chain_id(policy, chain_id)
-    token = _cai_owned_transport_auth_token(auth_token)
-    if cai_owned_transport_auth_required(require_auth) and not token:
-        raise ValueError("CAI-owned transport peer auth token is required.")
-    headers = {CAI_OWNED_TRANSPORT_CHAIN_HEADER: resolved_chain_id}
-    if token:
-        headers[CAI_OWNED_TRANSPORT_AUTH_HEADER] = token
-    return headers
-
-
-def validate_cai_owned_transport_request_auth(
-    headers: Mapping[str, Any] | None,
-    *,
-    chain_id: str | None = None,
-    auth_token: str | None = None,
-    require_auth: bool | str | None = None,
-    policy: WalletPolicy | None = None,
-) -> tuple[bool, str | None]:
-    header_map = _casefold_headers(headers or {})
-    expected_chain_id = _cai_owned_transport_chain_id(policy, chain_id)
-    incoming_chain_id = str(
-        header_map.get(CAI_OWNED_TRANSPORT_CHAIN_HEADER.lower()) or ""
-    ).strip()
-    if incoming_chain_id and incoming_chain_id != expected_chain_id:
-        return False, (
-            f"CAI-owned transport request is for chain '{incoming_chain_id}', "
-            f"expected '{expected_chain_id}'."
-        )
-
-    token = _cai_owned_transport_auth_token(auth_token)
-    required = cai_owned_transport_auth_required(require_auth) or bool(token)
-    if not required:
-        return True, None
-    if not token:
-        return False, "CAI-owned transport peer auth token is not configured."
-    incoming_token = str(
-        header_map.get(CAI_OWNED_TRANSPORT_AUTH_HEADER.lower()) or ""
-    )
-    if not incoming_token:
-        return False, "CAI-owned transport peer auth token is missing."
-    if not secrets.compare_digest(incoming_token, token):
-        return False, "CAI-owned transport peer auth token is invalid."
-    return True, None
-
-
-def validate_cai_owned_transport_local_runtime_auth(
-    runtime_auth_token: str | None = None,
-    *,
-    expected_token: str | None = None,
-    require_auth: bool | str | None = None,
-) -> tuple[bool, str | None]:
-    expected = _cai_owned_transport_local_runtime_token(expected_token)
-    required = _cai_owned_transport_local_runtime_auth_required(require_auth) or bool(
-        expected
-    )
-    if not required:
-        return True, None
-    if not expected:
-        return False, "CAI-owned transport local runtime auth token is not configured."
-    incoming = str(runtime_auth_token or "").strip()
-    if not incoming:
-        return False, "CAI-owned transport local runtime auth token is missing."
-    if not secrets.compare_digest(incoming, expected):
-        return False, "CAI-owned transport local runtime auth token is invalid."
-    return True, None
-
-
-def _require_cai_owned_transport_local_runtime_auth(
-    runtime_auth_token: str | None,
-    *,
-    require_runtime_auth: bool | str | None,
-) -> None:
-    valid, error = validate_cai_owned_transport_local_runtime_auth(
-        runtime_auth_token,
-        require_auth=require_runtime_auth,
-    )
-    if not valid:
-        raise ValueError(error or "CAI-owned transport local runtime auth failed.")
-
-
-def _cai_owned_transport_json_headers(
-    *,
-    chain_id: str | None = None,
-    auth_token: str | None = None,
-    require_auth: bool | str | None = None,
-) -> dict[str, str]:
-    return {
-        "Content-Type": "application/json",
-        **cai_owned_transport_auth_headers(
-            chain_id=chain_id,
-            auth_token=auth_token,
-            require_auth=require_auth,
-        ),
-    }
-
-
-def _cai_owned_transport_auth_token(value: str | None = None) -> str:
-    return str(
-        value
-        if value is not None
-        else os.getenv(CAI_OWNED_TRANSPORT_AUTH_TOKEN_ENV, "")
-    ).strip()
-
-
-def _cai_owned_transport_local_runtime_token(value: str | None = None) -> str:
-    return str(
-        value
-        if value is not None
-        else os.getenv(CAI_OWNED_TRANSPORT_LOCAL_RUNTIME_TOKEN_ENV, "")
-    ).strip()
-
-
-def _cai_owned_transport_local_runtime_auth_required(
-    value: bool | str | None = None,
-) -> bool:
-    if isinstance(value, bool):
-        return value
-    raw = str(
-        value
-        if value is not None
-        else os.getenv(CAI_OWNED_TRANSPORT_REQUIRE_LOCAL_RUNTIME_AUTH_ENV, "")
-    ).strip().lower()
-    return raw in {"1", "true", "yes", "on", "strict", "required"}
-
-
-def _casefold_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
-    return {str(key).strip().lower(): value for key, value in headers.items()}
 
 
 def build_cai_owned_transport_session_offer(

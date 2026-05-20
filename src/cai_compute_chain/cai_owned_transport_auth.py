@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import os
+import secrets
 from typing import Any
 
-from .cai_owned_transport_common import clean_node_ids as _clean_node_ids
+from .cai_owned_transport_common import (
+    cai_owned_transport_chain_id as _cai_owned_transport_chain_id,
+    clean_node_ids as _clean_node_ids,
+)
+from .cai_owned_transport_protocol import (
+    CAI_OWNED_TRANSPORT_AUTH_HEADER,
+    CAI_OWNED_TRANSPORT_AUTH_TOKEN_ENV,
+    CAI_OWNED_TRANSPORT_CHAIN_HEADER,
+    CAI_OWNED_TRANSPORT_LOCAL_RUNTIME_TOKEN_ENV,
+    CAI_OWNED_TRANSPORT_REQUIRE_AUTH_ENV,
+    CAI_OWNED_TRANSPORT_REQUIRE_LOCAL_RUNTIME_AUTH_ENV,
+)
 from .cai_owned_transport_storage import record_cai_owned_transport_payload_replay
 from .model import WalletPolicy
 from .peer_payload import (
@@ -14,6 +27,120 @@ from .peer_payload import (
     verify_peer_payload_signature,
 )
 from .wallet_signing import address_from_public_key_b64
+
+
+def cai_owned_transport_auth_required(value: bool | str | None = None) -> bool:
+    if isinstance(value, bool):
+        return value
+    raw = str(
+        value
+        if value is not None
+        else os.getenv(CAI_OWNED_TRANSPORT_REQUIRE_AUTH_ENV, "")
+    ).strip().lower()
+    return raw in {"1", "true", "yes", "on", "strict", "required"}
+
+
+def cai_owned_transport_auth_headers(
+    *,
+    chain_id: str | None = None,
+    auth_token: str | None = None,
+    require_auth: bool | str | None = None,
+    policy: WalletPolicy | None = None,
+) -> dict[str, str]:
+    resolved_chain_id = _cai_owned_transport_chain_id(policy, chain_id)
+    token = _cai_owned_transport_auth_token(auth_token)
+    if cai_owned_transport_auth_required(require_auth) and not token:
+        raise ValueError("CAI-owned transport peer auth token is required.")
+    headers = {CAI_OWNED_TRANSPORT_CHAIN_HEADER: resolved_chain_id}
+    if token:
+        headers[CAI_OWNED_TRANSPORT_AUTH_HEADER] = token
+    return headers
+
+
+def validate_cai_owned_transport_request_auth(
+    headers: Mapping[str, Any] | None,
+    *,
+    chain_id: str | None = None,
+    auth_token: str | None = None,
+    require_auth: bool | str | None = None,
+    policy: WalletPolicy | None = None,
+) -> tuple[bool, str | None]:
+    header_map = _casefold_headers(headers or {})
+    expected_chain_id = _cai_owned_transport_chain_id(policy, chain_id)
+    incoming_chain_id = str(
+        header_map.get(CAI_OWNED_TRANSPORT_CHAIN_HEADER.lower()) or ""
+    ).strip()
+    if incoming_chain_id and incoming_chain_id != expected_chain_id:
+        return False, (
+            f"CAI-owned transport request is for chain '{incoming_chain_id}', "
+            f"expected '{expected_chain_id}'."
+        )
+
+    token = _cai_owned_transport_auth_token(auth_token)
+    required = cai_owned_transport_auth_required(require_auth) or bool(token)
+    if not required:
+        return True, None
+    if not token:
+        return False, "CAI-owned transport peer auth token is not configured."
+    incoming_token = str(
+        header_map.get(CAI_OWNED_TRANSPORT_AUTH_HEADER.lower()) or ""
+    )
+    if not incoming_token:
+        return False, "CAI-owned transport peer auth token is missing."
+    if not secrets.compare_digest(incoming_token, token):
+        return False, "CAI-owned transport peer auth token is invalid."
+    return True, None
+
+
+def validate_cai_owned_transport_local_runtime_auth(
+    runtime_auth_token: str | None = None,
+    *,
+    expected_token: str | None = None,
+    require_auth: bool | str | None = None,
+) -> tuple[bool, str | None]:
+    expected = _cai_owned_transport_local_runtime_token(expected_token)
+    required = _cai_owned_transport_local_runtime_auth_required(require_auth) or bool(
+        expected
+    )
+    if not required:
+        return True, None
+    if not expected:
+        return False, "CAI-owned transport local runtime auth token is not configured."
+    incoming = str(runtime_auth_token or "").strip()
+    if not incoming:
+        return False, "CAI-owned transport local runtime auth token is missing."
+    if not secrets.compare_digest(incoming, expected):
+        return False, "CAI-owned transport local runtime auth token is invalid."
+    return True, None
+
+
+def require_cai_owned_transport_local_runtime_auth(
+    runtime_auth_token: str | None,
+    *,
+    require_runtime_auth: bool | str | None,
+) -> None:
+    valid, error = validate_cai_owned_transport_local_runtime_auth(
+        runtime_auth_token,
+        require_auth=require_runtime_auth,
+    )
+    if not valid:
+        raise ValueError(error or "CAI-owned transport local runtime auth failed.")
+
+
+def cai_owned_transport_json_headers(
+    *,
+    chain_id: str | None = None,
+    auth_token: str | None = None,
+    require_auth: bool | str | None = None,
+) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        **cai_owned_transport_auth_headers(
+            chain_id=chain_id,
+            auth_token=auth_token,
+            require_auth=require_auth,
+        ),
+    }
 
 
 def sign_cai_owned_transport_payload(
@@ -352,3 +479,36 @@ def _looks_like_cai_public_key_address(value: str) -> bool:
     return len(normalized) == 32 and all(
         character in "0123456789abcdef" for character in normalized
     )
+
+
+def _cai_owned_transport_auth_token(value: str | None = None) -> str:
+    return str(
+        value
+        if value is not None
+        else os.getenv(CAI_OWNED_TRANSPORT_AUTH_TOKEN_ENV, "")
+    ).strip()
+
+
+def _cai_owned_transport_local_runtime_token(value: str | None = None) -> str:
+    return str(
+        value
+        if value is not None
+        else os.getenv(CAI_OWNED_TRANSPORT_LOCAL_RUNTIME_TOKEN_ENV, "")
+    ).strip()
+
+
+def _cai_owned_transport_local_runtime_auth_required(
+    value: bool | str | None = None,
+) -> bool:
+    if isinstance(value, bool):
+        return value
+    raw = str(
+        value
+        if value is not None
+        else os.getenv(CAI_OWNED_TRANSPORT_REQUIRE_LOCAL_RUNTIME_AUTH_ENV, "")
+    ).strip().lower()
+    return raw in {"1", "true", "yes", "on", "strict", "required"}
+
+
+def _casefold_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key).strip().lower(): value for key, value in headers.items()}
