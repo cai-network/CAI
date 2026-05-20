@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from urllib.parse import parse_qs, urlsplit
 
-
-CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX = "cai-overlay:"
+from .cai_owned_transport_protocol import CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX
 
 
 def clean_peer_cai_urls(peer_cai_urls: Sequence[str]) -> list[str]:

@@ -12,17 +12,17 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .cai_owned_transport_protocol import (
+    CAI_OWNED_TRANSPORT_PAYLOAD_RETENTION_SECONDS,
+    CAI_OWNED_TRANSPORT_PROTOCOL,
+    CAI_OWNED_TRANSPORT_PROTOCOL_VERSION,
+    CAI_OWNED_TRANSPORT_REPLAY_CACHE_RETENTION_SECONDS,
+    EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
+)
 from .local_json_store import atomic_write_json_array_file, read_json_array_file
 from .model import MoneyPolicy, WalletPolicy
 from .peer_payload import peer_payload_signing_body
 from .wallet import data_root
-
-
-CAI_OWNED_TRANSPORT_PROTOCOL = "cai-owned-llm-shard-transport"
-CAI_OWNED_TRANSPORT_PROTOCOL_VERSION = 1
-EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED = "cai_owned_transport_required"
-CAI_OWNED_TRANSPORT_PAYLOAD_RETENTION_SECONDS = 7 * 24 * 60 * 60.0
-CAI_OWNED_TRANSPORT_REPLAY_CACHE_RETENTION_SECONDS = 24 * 60 * 60.0
 
 
 @dataclass
