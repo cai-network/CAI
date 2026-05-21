@@ -72,6 +72,10 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             common.validate_cai_owned_transport_created_at,
         )
         self.assertIs(
+            decentralized_compute._validate_cai_owned_transport_batch_replay,
+            common.validate_cai_owned_transport_batch_replay,
+        )
+        self.assertIs(
             decentralized_compute._jsonable_dict,
             common.jsonable_dict,
         )
@@ -227,6 +231,35 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 now=now,
             ),
             (False, "CAI-owned transport test payload has expired."),
+        )
+        existing_batch = {
+            "phase": "prefill_activation_batches",
+            "sourceNodeId": "node-a",
+            "sinkNodeId": "node-b",
+            "payloadSha256Hex": "a" * 64,
+        }
+        self.assertEqual(
+            common.validate_cai_owned_transport_batch_replay(
+                existing_batch,
+                phase="prefill_activation_batches",
+                source_node_id="node-a",
+                sink_node_id="node-b",
+                payload_sha256_hex="a" * 64,
+            ),
+            (True, ""),
+        )
+        self.assertEqual(
+            common.validate_cai_owned_transport_batch_replay(
+                existing_batch,
+                phase="decode_activation_batches",
+                source_node_id="node-a",
+                sink_node_id="node-b",
+                payload_sha256_hex="a" * 64,
+            ),
+            (
+                False,
+                "CAI-owned transport batch replay phase does not match.",
+            ),
         )
 
     def test_peer_url_helpers_parse_overlay_targets(self) -> None:

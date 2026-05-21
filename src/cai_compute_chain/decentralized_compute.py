@@ -77,6 +77,7 @@ from .cai_owned_transport_common import (
     optional_sha256_hex as _optional_sha256_hex,
     parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
     require_safe_transport_file_id as _require_safe_transport_file_id,
+    validate_cai_owned_transport_batch_replay as _validate_cai_owned_transport_batch_replay,
     validate_cai_owned_transport_chain_id as _validate_cai_owned_transport_chain_id,
     validate_cai_owned_transport_created_at as _validate_cai_owned_transport_created_at,
 )
@@ -7405,36 +7406,6 @@ def _require_cai_owned_transport_batch_completion_owner(
         raise ValueError("CAI-owned transport batch runtime id does not match.")
     if _cai_owned_transport_batch_lease_expired(batch, datetime.now(tz=UTC)):
         raise ValueError("CAI-owned transport batch lease has expired.")
-
-
-def _validate_cai_owned_transport_batch_replay(
-    existing_batch: dict[str, Any],
-    *,
-    phase: str,
-    source_node_id: str,
-    sink_node_id: str,
-    payload_sha256_hex: str | None,
-) -> tuple[bool, str]:
-    checks = (
-        ("phase", phase, "phase"),
-        ("sourceNodeId", source_node_id, "source node"),
-        ("sinkNodeId", sink_node_id, "sink node"),
-    )
-    for field_name, expected_value, label in checks:
-        existing_value = str(existing_batch.get(field_name) or "").strip()
-        if existing_value != str(expected_value or "").strip():
-            return (
-                False,
-                f"CAI-owned transport batch replay {label} does not match.",
-            )
-    existing_hash = str(existing_batch.get("payloadSha256Hex") or "").strip().lower()
-    incoming_hash = str(payload_sha256_hex or "").strip().lower()
-    if existing_hash != incoming_hash:
-        return (
-            False,
-            "CAI-owned transport batch replay payload hash does not match.",
-        )
-    return True, ""
 
 
 def _validate_cai_owned_transport_processed_batch_execution_audit(

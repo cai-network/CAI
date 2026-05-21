@@ -135,6 +135,36 @@ def validate_cai_owned_transport_chain_id(
     return True, None, incoming
 
 
+def validate_cai_owned_transport_batch_replay(
+    existing_batch: dict[str, Any],
+    *,
+    phase: str,
+    source_node_id: str,
+    sink_node_id: str,
+    payload_sha256_hex: str | None,
+) -> tuple[bool, str]:
+    checks = (
+        ("phase", phase, "phase"),
+        ("sourceNodeId", source_node_id, "source node"),
+        ("sinkNodeId", sink_node_id, "sink node"),
+    )
+    for field_name, expected_value, label in checks:
+        existing_value = str(existing_batch.get(field_name) or "").strip()
+        if existing_value != str(expected_value or "").strip():
+            return (
+                False,
+                f"CAI-owned transport batch replay {label} does not match.",
+            )
+    existing_hash = str(existing_batch.get("payloadSha256Hex") or "").strip().lower()
+    incoming_hash = str(payload_sha256_hex or "").strip().lower()
+    if existing_hash != incoming_hash:
+        return (
+            False,
+            "CAI-owned transport batch replay payload hash does not match.",
+        )
+    return True, ""
+
+
 def jsonable_dict(value: dict[str, Any], *, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"CAI-owned transport {field_name} must be an object.")
