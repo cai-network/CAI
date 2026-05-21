@@ -6,6 +6,7 @@ import unittest
 
 from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
 from cai_compute_chain import cai_owned_transport_common as common
+from cai_compute_chain import cai_owned_transport_execution_plan as execution_plan
 from cai_compute_chain import cai_owned_transport_ids as transport_ids
 from cai_compute_chain import cai_owned_transport_payload_codec as payload_codec
 from cai_compute_chain import cai_owned_transport_protocol as protocol
@@ -65,6 +66,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             decentralized_compute._cai_owned_transport_stage_id,
             transport_ids.cai_owned_transport_stage_id,
         )
+        self.assertIs(
+            decentralized_compute._normalize_cai_owned_transport_shard_ranges,
+            execution_plan.normalize_cai_owned_transport_shard_ranges,
+        )
+        self.assertIs(
+            decentralized_compute._cai_owned_transport_output_route_plan_from_dag,
+            execution_plan.cai_owned_transport_output_route_plan_from_dag,
+        )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
         self.assertEqual(
@@ -98,6 +107,88 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 prefix="caistage_",
             ),
             "caistage_stage-1",
+        )
+
+    def test_execution_plan_helpers_preserve_shard_ranges(self) -> None:
+        self.assertEqual(
+            execution_plan.normalize_cai_owned_transport_shard_ranges(
+                ["node-a", "node-b", "node-c"],
+                10,
+            ),
+            [
+                {
+                    "nodeId": "node-a",
+                    "layerStart": 0,
+                    "layerEnd": 4,
+                    "layerCount": 4,
+                },
+                {
+                    "nodeId": "node-b",
+                    "layerStart": 4,
+                    "layerEnd": 7,
+                    "layerCount": 3,
+                },
+                {
+                    "nodeId": "node-c",
+                    "layerStart": 7,
+                    "layerEnd": 10,
+                    "layerCount": 3,
+                },
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "must be contiguous"):
+            execution_plan.normalize_cai_owned_transport_shard_ranges(
+                ["node-a", "node-b"],
+                8,
+                shard_ranges=[
+                    {"nodeId": "node-a", "layerStart": 0, "layerEnd": 4},
+                    {"nodeId": "node-b", "layerStart": 5, "layerEnd": 8},
+                ],
+            )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_output_route_plan_from_dag(
+                {
+                    "stages": [
+                        {
+                            "stageId": "stage-1",
+                            "sinkNodeId": "node-a",
+                            "phase": "prefill_activation_batches",
+                            "sequence": 0,
+                            "executorNodeId": "node-a",
+                            "layerStart": 0,
+                            "layerEnd": 4,
+                        },
+                        {
+                            "stageId": "stage-2",
+                            "sinkNodeId": "node-b",
+                            "phase": "decode_activation_batches",
+                            "sequence": 1,
+                            "executorNodeId": "node-b",
+                            "layerStart": 4,
+                            "layerEnd": 8,
+                        },
+                    ]
+                },
+                requester_node_id="requester",
+            ),
+            [
+                {
+                    "sinkNodeId": "node-b",
+                    "phase": "decode_activation_batches",
+                    "sequence": 1,
+                    "stageId": "stage-2",
+                    "executorNodeId": "node-b",
+                    "layerStart": 4,
+                    "layerEnd": 8,
+                },
+                {
+                    "sinkNodeId": "requester",
+                    "phase": "decode_activation_batches",
+                    "sequence": 2,
+                    "stageId": "final_result",
+                    "finalOutput": True,
+                },
+            ],
         )
 
 
