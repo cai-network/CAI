@@ -107,6 +107,10 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             transport_receipts.cai_owned_transport_proof_batch_ids,
         )
         self.assertIs(
+            decentralized_compute._append_unique_metric,
+            transport_receipts.append_unique_metric,
+        )
+        self.assertIs(
             decentralized_compute._apply_cai_owned_transport_batch_lease,
             batch_lifecycle.apply_cai_owned_transport_batch_lease,
         )
@@ -404,6 +408,22 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 "activationBatchCount",
             ),
             5,
+        )
+        values: list[str] = []
+        transport_receipts.append_unique(values, " node-a ")
+        transport_receipts.append_unique(values, "node-a")
+        self.assertEqual(values, ["node-a"])
+
+        metrics: dict[str, object] = {}
+        transport_receipts.append_unique_metric(metrics, "adapterIds", "adapter-a")
+        transport_receipts.append_unique_metric(metrics, "adapterIds", "adapter-a")
+        self.assertEqual(metrics, {"adapterIds": ["adapter-a"]})
+        self.assertEqual(
+            transport_receipts.first_metric_value(
+                {"inputTokens": 7, "inputTokenCount": 9},
+                ("missing", "inputTokens", "inputTokenCount"),
+            ),
+            7,
         )
 
     def test_batch_lifecycle_helpers_preserve_claim_and_timeout_state(self) -> None:

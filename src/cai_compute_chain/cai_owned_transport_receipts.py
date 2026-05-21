@@ -164,6 +164,32 @@ def max_receipt_count(
     return max(values) if values else 0
 
 
+def append_unique(values: list[Any], value: object) -> None:
+    clean = str(value or "").strip()
+    if clean and clean not in values:
+        values.append(clean)
+
+
+def append_unique_metric(
+    metrics: dict[str, Any],
+    field_name: str,
+    value: object,
+) -> None:
+    clean = str(value or "").strip()
+    if not clean:
+        return
+    existing = metrics.setdefault(field_name, [])
+    if isinstance(existing, list) and clean not in existing:
+        existing.append(clean)
+
+
+def first_metric_value(metrics: Mapping[str, Any], fields: Sequence[str]) -> Any:
+    for field_name in fields:
+        if metrics.get(field_name) is not None:
+            return metrics.get(field_name)
+    return None
+
+
 def _normalize_sha256_hex(
     value: object,
     *,

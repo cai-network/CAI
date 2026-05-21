@@ -125,6 +125,8 @@ from .cai_owned_transport_protocol import (
     EXECUTION_MODE_SINGLE_NODE,
 )
 from .cai_owned_transport_receipts import (
+    append_unique as _append_unique,
+    append_unique_metric as _append_unique_metric,
     cai_owned_transport_proof_batch_ids as _cai_owned_transport_proof_batch_ids,
     cai_owned_transport_receipt_values as _cai_owned_transport_receipt_values,
     cai_owned_transport_shard_receipt_batch_ids as _cai_owned_transport_shard_receipt_batch_ids,
@@ -133,6 +135,7 @@ from .cai_owned_transport_receipts import (
     clean_cai_owned_transport_receipt_hashes as _clean_cai_owned_transport_receipt_hashes,
     clean_cai_owned_transport_receipt_sequences as _clean_cai_owned_transport_receipt_sequences,
     clean_cai_owned_transport_receipt_stage_ids as _clean_cai_owned_transport_receipt_stage_ids,
+    first_metric_value as _first_metric_value,
     max_receipt_count as _max_receipt_count,
 )
 from .cai_owned_transport_route_readiness import (
@@ -7725,32 +7728,6 @@ def _validate_cai_owned_transport_processed_batch_execution_audit(
                 normalized_chain_hash,
             )
     return True, None, normalized_chain_hash
-
-
-def _append_unique(values: list[Any], value: object) -> None:
-    clean = str(value or "").strip()
-    if clean and clean not in values:
-        values.append(clean)
-
-
-def _append_unique_metric(
-    metrics: dict[str, Any],
-    field_name: str,
-    value: object,
-) -> None:
-    clean = str(value or "").strip()
-    if not clean:
-        return
-    existing = metrics.setdefault(field_name, [])
-    if isinstance(existing, list) and clean not in existing:
-        existing.append(clean)
-
-
-def _first_metric_value(metrics: Mapping[str, Any], fields: Sequence[str]) -> Any:
-    for field_name in fields:
-        if metrics.get(field_name) is not None:
-            return metrics.get(field_name)
-    return None
 
 
 def _jsonable_dict(value: dict[str, Any], *, field_name: str) -> dict[str, Any]:
