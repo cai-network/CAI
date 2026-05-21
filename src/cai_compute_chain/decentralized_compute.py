@@ -176,6 +176,18 @@ from .cai_owned_transport_storage import (
     save_cai_owned_transport_replay_cache,
     save_cai_owned_transport_sessions,
 )
+from .cai_owned_transport_summary_helpers import (
+    coerce_byte_count as _coerce_byte_count,
+    non_negative_int_or_default as _non_negative_int_or_default,
+    summary_bool as _summary_bool,
+    summary_model_id_in_list as _summary_model_id_in_list,
+    summary_model_id_matches as _summary_model_id_matches,
+    summary_payload_model_matches as _summary_payload_model_matches,
+    summary_resource_bytes as _summary_resource_bytes,
+    summary_resource_payload as _summary_resource_payload,
+    summary_string_list as _summary_string_list,
+    summary_string_values as _summary_string_values,
+)
 
 
 def build_cai_owned_transport_session_offer(
@@ -5722,93 +5734,6 @@ def _summary_resource_headroom_audit(
     return audit
 
 
-def _summary_resource_payload(
-    summary: Mapping[str, Any],
-    worker: Mapping[str, Any],
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for payload in (summary, worker):
-        for field_name in ("resources", "resourceSummary", "resource_summary"):
-            value = payload.get(field_name)
-            if isinstance(value, Mapping):
-                merged.update(value)
-        merged.update(
-            {
-                key: value
-                for key, value in payload.items()
-                if key
-                in {
-                    "ramBytes",
-                    "ramTotalBytes",
-                    "ramAvailableBytes",
-                    "availableRamBytes",
-                    "ram_bytes",
-                    "ram_total_bytes",
-                    "ram_available_bytes",
-                    "available_ram_bytes",
-                    "ramTotal",
-                    "ramAvailable",
-                    "ram_total",
-                    "ram_available",
-                    "vramBytes",
-                    "vramTotalBytes",
-                    "vramAvailableBytes",
-                    "availableVramBytes",
-                    "vram_bytes",
-                    "vram_total_bytes",
-                    "vram_available_bytes",
-                    "available_vram_bytes",
-                    "vramTotal",
-                    "vramAvailable",
-                    "vram_total",
-                    "vram_available",
-                    "cpuCores",
-                    "cpu_cores",
-                }
-            }
-        )
-    return merged
-
-
-def _summary_resource_bytes(
-    payload: Mapping[str, Any],
-    *field_names: str,
-) -> int | None:
-    for field_name in field_names:
-        if field_name not in payload:
-            continue
-        parsed = _coerce_byte_count(payload.get(field_name))
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _coerce_byte_count(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        for key in ("inBytes", "in_bytes", "bytes", "value"):
-            if key in value:
-                return _coerce_byte_count(value.get(key))
-        return None
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = int(float(value))
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _non_negative_int_or_default(value: int | None, default: int) -> int:
-    if value is None:
-        return max(0, int(default or 0))
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return max(0, int(default or 0))
-
-
 def _summary_cai_owned_transport_readiness(
     summary: Mapping[str, Any],
     worker: Mapping[str, Any],
@@ -5829,30 +5754,6 @@ def _summary_cai_owned_transport_readiness(
         if isinstance(candidate, Mapping):
             return candidate
     return None
-
-
-def _summary_bool(payload: Mapping[str, Any], *field_names: str) -> bool | None:
-    for field_name in field_names:
-        if field_name not in payload:
-            continue
-        value = payload.get(field_name)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"1", "true", "yes", "on", "enabled", "ready"}:
-                return True
-            if lowered in {"0", "false", "no", "off", "disabled"}:
-                return False
-    return None
-
-
-def _summary_string_list(payload: Mapping[str, Any], *field_names: str) -> list[str]:
-    for field_name in field_names:
-        value = payload.get(field_name)
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            return [str(item or "").strip() for item in value if str(item or "").strip()]
-    return []
 
 
 def _summary_model_shard_readiness_audit(
@@ -6369,34 +6270,6 @@ def _summary_missing_required_ranges(
                 {"layerStart": required_start, "layerEnd": required_end}
             )
     return missing
-
-
-def _summary_payload_model_matches(payload: Mapping[str, Any], model_id: str) -> bool:
-    for field_name in ("modelId", "model_id", "id", "name"):
-        if _summary_model_id_matches(str(payload.get(field_name) or ""), model_id):
-            return True
-    return False
-
-
-def _summary_model_id_in_list(value: Any, model_id: str) -> bool:
-    return any(
-        _summary_model_id_matches(str(item or ""), model_id)
-        for item in _summary_string_values(value)
-    )
-
-
-def _summary_string_values(value: Any) -> list[str]:
-    if isinstance(value, Mapping):
-        return [str(item) for item in value.keys()]
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return [str(item) for item in value]
-    return []
-
-
-def _summary_model_id_matches(value: str, expected: str) -> bool:
-    candidate = str(value or "").strip()
-    requested = str(expected or "").strip()
-    return bool(candidate and requested) and candidate.lower() == requested.lower()
 
 
 def build_cai_owned_transport_contract(

@@ -16,6 +16,7 @@ from cai_compute_chain import cai_owned_transport_protocol as protocol
 from cai_compute_chain import cai_owned_transport_receipts as transport_receipts
 from cai_compute_chain import cai_owned_transport_storage as storage
 from cai_compute_chain import cai_owned_transport_auth as transport_auth
+from cai_compute_chain import cai_owned_transport_summary_helpers as summary_helpers
 from cai_compute_chain import cai_owned_transport_versioning as versioning
 from cai_compute_chain import decentralized_compute
 from cai_compute_chain.model import ChainNetwork, WalletPolicy
@@ -154,6 +155,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute._cai_owned_transport_version_label,
             versioning.cai_owned_transport_version_label,
+        )
+        self.assertIs(
+            decentralized_compute._summary_bool,
+            summary_helpers.summary_bool,
+        )
+        self.assertIs(
+            decentralized_compute._summary_model_id_matches,
+            summary_helpers.summary_model_id_matches,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
@@ -697,6 +706,57 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIn(
             "CAI-owned transport adapter version is missing.",
             incompatible["errors"],
+        )
+
+    def test_summary_helpers_parse_resources_and_model_ids(self) -> None:
+        self.assertIs(
+            summary_helpers.summary_bool({"ready": "enabled"}, "ready"),
+            True,
+        )
+        self.assertIs(
+            summary_helpers.summary_bool({"ready": "disabled"}, "ready"),
+            False,
+        )
+        self.assertEqual(
+            summary_helpers.summary_string_list(
+                {"models": [" model-a ", "", "model-b"]},
+                "models",
+            ),
+            ["model-a", "model-b"],
+        )
+        self.assertEqual(
+            summary_helpers.summary_resource_payload(
+                {"resources": {"ramAvailableBytes": "1024"}},
+                {"vramAvailable": {"bytes": "2048"}},
+            ),
+            {
+                "ramAvailableBytes": "1024",
+                "vramAvailable": {"bytes": "2048"},
+            },
+        )
+        self.assertEqual(
+            summary_helpers.summary_resource_bytes(
+                {"vramAvailable": {"bytes": "2048"}},
+                "vramAvailable",
+            ),
+            2048,
+        )
+        self.assertIsNone(summary_helpers.coerce_byte_count(True))
+        self.assertEqual(summary_helpers.non_negative_int_or_default(None, 3), 3)
+        self.assertTrue(
+            summary_helpers.summary_model_id_matches("MODEL-A", "model-a")
+        )
+        self.assertTrue(
+            summary_helpers.summary_payload_model_matches(
+                {"model_id": "model-a"},
+                "MODEL-A",
+            )
+        )
+        self.assertTrue(
+            summary_helpers.summary_model_id_in_list(
+                {"model-a": {"ready": True}},
+                "MODEL-A",
+            )
         )
 
 
