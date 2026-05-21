@@ -108,8 +108,16 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             execution_plan.clean_sink_node_ids,
         )
         self.assertIs(
+            decentralized_compute._cai_owned_transport_frame_kind_for_phase,
+            execution_plan.cai_owned_transport_frame_kind_for_phase,
+        )
+        self.assertIs(
             decentralized_compute._runtime_metadata_text,
             llm_runtime_metadata.runtime_metadata_text,
+        )
+        self.assertIs(
+            decentralized_compute._cai_owned_transport_llm_runtime_metadata,
+            llm_runtime_metadata.cai_owned_transport_llm_runtime_metadata,
         )
         self.assertIs(
             decentralized_compute._require_runtime_metadata_layer_range_supported,
@@ -361,6 +369,39 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 },
             ],
         )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_frame_kind_for_phase(
+                "decode_activation_batches"
+            ),
+            "decode",
+        )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_frame_kind_for_phase(
+                "prefill_activation_batches"
+            ),
+            "activation",
+        )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_template_token_start(
+                "decode_activation_batches",
+                5,
+            ),
+            5,
+        )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_template_token_end(
+                "decode_activation_batches",
+                5,
+            ),
+            6,
+        )
+        self.assertEqual(
+            execution_plan.cai_owned_transport_template_token_end(
+                "prefill_activation_batches",
+                5,
+            ),
+            5,
+        )
 
     def test_llm_runtime_metadata_helpers_preserve_descriptor_fields(self) -> None:
         metadata = {
@@ -424,6 +465,20 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 {"layerRangeSupported": False},
                 model_id="model-a",
             )
+        self.assertEqual(
+            llm_runtime_metadata.cai_owned_transport_llm_runtime_metadata(
+                {"backend": "llama.cpp"},
+                model_id="model-a",
+                total_layer_count=12,
+                tokenizer_config_hash="b" * 64,
+            ),
+            {
+                "backend": "llama.cpp",
+                "modelId": "model-a",
+                "totalLayerCount": 12,
+                "tokenizerConfigHash": "b" * 64,
+            },
+        )
 
     def test_receipt_helpers_clean_and_validate_proof_batch_ids(self) -> None:
         proof = {

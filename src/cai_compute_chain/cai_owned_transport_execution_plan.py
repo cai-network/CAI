@@ -200,6 +200,26 @@ def cai_owned_transport_output_route_plan_from_dag(
     return [item for item in plan if item["sinkNodeId"] and item["phase"]]
 
 
+def cai_owned_transport_frame_kind_for_phase(phase: str) -> str:
+    if phase == "decode_activation_batches":
+        return "decode"
+    if phase == "prefill_activation_batches":
+        return "activation"
+    return "activation"
+
+
+def cai_owned_transport_template_token_start(phase: str, token_count: int) -> int:
+    if phase == "decode_activation_batches":
+        return max(0, int(token_count or 0))
+    return 0
+
+
+def cai_owned_transport_template_token_end(phase: str, token_count: int) -> int:
+    if phase == "decode_activation_batches":
+        return max(0, int(token_count or 0)) + 1
+    return max(0, int(token_count or 0))
+
+
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None

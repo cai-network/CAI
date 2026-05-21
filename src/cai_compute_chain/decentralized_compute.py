@@ -50,6 +50,7 @@ from .cai_owned_transport_batch_lifecycle import (
     mark_cai_owned_transport_batch_timed_out as _mark_cai_owned_transport_batch_timed_out,
 )
 from .cai_owned_llm_runtime_metadata import (
+    cai_owned_transport_llm_runtime_metadata as _cai_owned_transport_llm_runtime_metadata,
     require_runtime_metadata_layer_range_supported as _require_runtime_metadata_layer_range_supported,
     runtime_metadata_bool as _runtime_metadata_bool,
     runtime_metadata_external_shard_descriptor as _runtime_metadata_external_shard_descriptor,
@@ -80,8 +81,11 @@ from .cai_owned_transport_common import (
     validate_cai_owned_transport_created_at as _validate_cai_owned_transport_created_at,
 )
 from .cai_owned_transport_execution_plan import (
+    cai_owned_transport_frame_kind_for_phase as _cai_owned_transport_frame_kind_for_phase,
     cai_owned_transport_layer_ranges as _cai_owned_transport_layer_ranges,
     cai_owned_transport_output_route_plan_from_dag as _cai_owned_transport_output_route_plan_from_dag,
+    cai_owned_transport_template_token_end as _cai_owned_transport_template_token_end,
+    cai_owned_transport_template_token_start as _cai_owned_transport_template_token_start,
     clean_sink_node_ids as _clean_sink_node_ids,
     execution_mode_for_compute_cell as _execution_mode_for_compute_cell,
     execution_reason as _execution_reason,
@@ -7038,25 +7042,6 @@ def validate_cai_owned_transport_execution_proof(
     return True, None
 
 
-def _cai_owned_transport_llm_runtime_metadata(
-    metadata: Mapping[str, Any] | None,
-    *,
-    model_id: str,
-    total_layer_count: int,
-    tokenizer_config_hash: str | None,
-) -> dict[str, Any] | None:
-    if metadata is None:
-        return None
-    if not isinstance(metadata, Mapping):
-        raise ValueError("CAI-owned dispatch LLM runtime metadata is invalid.")
-    resolved = dict(metadata)
-    resolved.setdefault("modelId", str(model_id or "").strip())
-    resolved.setdefault("totalLayerCount", int(total_layer_count))
-    if tokenizer_config_hash:
-        resolved.setdefault("tokenizerConfigHash", tokenizer_config_hash)
-    return resolved
-
-
 def _attach_cai_owned_transport_llm_route_frame_templates(
     route_plan: list[dict[str, Any]],
     *,
@@ -7103,26 +7088,6 @@ def _attach_cai_owned_transport_llm_route_frame_templates(
             template["nextFrameTemplate"] = next_template
         item["frameTemplate"] = template
         next_template = template
-
-
-def _cai_owned_transport_frame_kind_for_phase(phase: str) -> str:
-    if phase == "decode_activation_batches":
-        return "decode"
-    if phase == "prefill_activation_batches":
-        return "activation"
-    return "activation"
-
-
-def _cai_owned_transport_template_token_start(phase: str, token_count: int) -> int:
-    if phase == "decode_activation_batches":
-        return max(0, int(token_count or 0))
-    return 0
-
-
-def _cai_owned_transport_template_token_end(phase: str, token_count: int) -> int:
-    if phase == "decode_activation_batches":
-        return max(0, int(token_count or 0)) + 1
-    return max(0, int(token_count or 0))
 
 
 def _validate_cai_owned_transport_execution_dag_coverage(

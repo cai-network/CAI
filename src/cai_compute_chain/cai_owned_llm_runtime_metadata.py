@@ -14,6 +14,25 @@ from .gguf_shard_policy import (
 )
 
 
+def cai_owned_transport_llm_runtime_metadata(
+    metadata: Mapping[str, Any] | None,
+    *,
+    model_id: str,
+    total_layer_count: int,
+    tokenizer_config_hash: str | None,
+) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, Mapping):
+        raise ValueError("CAI-owned dispatch LLM runtime metadata is invalid.")
+    resolved = dict(metadata)
+    resolved.setdefault("modelId", str(model_id or "").strip())
+    resolved.setdefault("totalLayerCount", int(total_layer_count))
+    if tokenizer_config_hash:
+        resolved.setdefault("tokenizerConfigHash", tokenizer_config_hash)
+    return resolved
+
+
 def runtime_metadata_text(metadata: Mapping[str, Any], *keys: str) -> str | None:
     for key in keys:
         raw = metadata.get(key)
