@@ -11,6 +11,7 @@ from cai_compute_chain import cai_owned_transport_execution_plan as execution_pl
 from cai_compute_chain import cai_owned_transport_ids as transport_ids
 from cai_compute_chain import cai_owned_transport_payload_codec as payload_codec
 from cai_compute_chain import cai_owned_transport_protocol as protocol
+from cai_compute_chain import cai_owned_transport_receipts as transport_receipts
 from cai_compute_chain import cai_owned_transport_storage as storage
 from cai_compute_chain import cai_owned_transport_auth as transport_auth
 from cai_compute_chain import decentralized_compute
@@ -94,6 +95,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute._require_runtime_metadata_layer_range_supported,
             llm_runtime_metadata.require_runtime_metadata_layer_range_supported,
+        )
+        self.assertIs(
+            decentralized_compute._clean_cai_owned_transport_receipt_batch_ids,
+            transport_receipts.clean_cai_owned_transport_receipt_batch_ids,
+        )
+        self.assertIs(
+            decentralized_compute._cai_owned_transport_proof_batch_ids,
+            transport_receipts.cai_owned_transport_proof_batch_ids,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
@@ -333,6 +342,59 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 {"layerRangeSupported": False},
                 model_id="model-a",
             )
+
+    def test_receipt_helpers_clean_and_validate_proof_batch_ids(self) -> None:
+        proof = {
+            "shardReceipts": [
+                {"batchIds": ["caibatch_alpha", "caibatch_alpha"]},
+                {"batchIds": ["caibatch_beta"]},
+            ]
+        }
+        batch_ids, errors = transport_receipts.cai_owned_transport_proof_batch_ids(
+            proof,
+        )
+
+        self.assertEqual(batch_ids, {"caibatch_alpha", "caibatch_beta"})
+        self.assertEqual(
+            errors,
+            ["CAI-owned transport proof duplicates batch id 'caibatch_alpha'."],
+        )
+        self.assertEqual(
+            transport_receipts.clean_cai_owned_transport_receipt_stage_ids(
+                ["caistage_1", "caistage_1", "", "caistage_2"],
+            ),
+            ["caistage_1", "caistage_2"],
+        )
+        self.assertEqual(
+            transport_receipts.clean_cai_owned_transport_receipt_sequences(
+                [0, "1", "-2", "bad", 1],
+            ),
+            [0, 1],
+        )
+        self.assertEqual(
+            transport_receipts.clean_cai_owned_transport_receipt_hashes(
+                ["A" * 64, "a" * 64],
+                field_name="hashes",
+            ),
+            ["a" * 64],
+        )
+        self.assertEqual(
+            transport_receipts.clean_cai_owned_transport_receipt_audits(
+                [{"route": "direct"}],
+            ),
+            [{"route": "direct"}],
+        )
+        self.assertEqual(
+            transport_receipts.max_receipt_count(
+                [
+                    {"activationBatchCount": "2"},
+                    {"activationBatchCount": 5},
+                    {"activationBatchCount": "bad"},
+                ],
+                "activationBatchCount",
+            ),
+            5,
+        )
 
 
 if __name__ == "__main__":
