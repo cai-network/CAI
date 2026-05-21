@@ -16,6 +16,7 @@ from cai_compute_chain import cai_owned_transport_protocol as protocol
 from cai_compute_chain import cai_owned_transport_receipts as transport_receipts
 from cai_compute_chain import cai_owned_transport_storage as storage
 from cai_compute_chain import cai_owned_transport_auth as transport_auth
+from cai_compute_chain import cai_owned_transport_versioning as versioning
 from cai_compute_chain import decentralized_compute
 from cai_compute_chain.model import ChainNetwork, WalletPolicy
 
@@ -133,6 +134,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute._clear_cai_owned_transport_batch_runtime_claim,
             batch_lifecycle.clear_cai_owned_transport_batch_runtime_claim,
+        )
+        self.assertIs(
+            decentralized_compute.cai_owned_transport_version_compatibility,
+            versioning.cai_owned_transport_version_compatibility,
+        )
+        self.assertIs(
+            decentralized_compute._cai_owned_transport_version_label,
+            versioning.cai_owned_transport_version_label,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
@@ -548,6 +557,59 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             "claimedByNodeId",
         ):
             self.assertNotIn(key, batch)
+
+    def test_versioning_helpers_validate_protocol_and_runtime_fields(self) -> None:
+        compatible = versioning.cai_owned_transport_version_compatibility(
+            {
+                "protocol": protocol.CAI_OWNED_TRANSPORT_PROTOCOL,
+                "protocolVersion": protocol.CAI_OWNED_TRANSPORT_PROTOCOL_VERSION,
+                "compatibleProtocolVersions": [
+                    protocol.CAI_OWNED_TRANSPORT_PROTOCOL_VERSION
+                ],
+                "runtimeVersion": "cai-owned-runtime/0.1",
+                "adapterId": "llama.cpp",
+                "adapterVersion": "0.1.0",
+            },
+            require_runtime_versions=True,
+        )
+        self.assertTrue(compatible["compatible"])
+        self.assertEqual(compatible["errors"], [])
+        self.assertEqual(
+            versioning.cai_owned_transport_int_list([1, "1", "bad", 2]),
+            [1, 2],
+        )
+        self.assertEqual(
+            versioning.cai_owned_transport_version_label(" runtime/0.1+gpu "),
+            "runtime/0.1+gpu",
+        )
+
+        incompatible = versioning.cai_owned_transport_version_compatibility(
+            {
+                "protocol": "other",
+                "protocolVersion": 999,
+                "runtimeVersion": "bad version",
+                "adapterId": "adapter",
+                "adapterVersion": "",
+            },
+            require_runtime_versions=True,
+        )
+        self.assertFalse(incompatible["compatible"])
+        self.assertIn(
+            "CAI-owned transport protocol is incompatible.",
+            incompatible["errors"],
+        )
+        self.assertIn(
+            "CAI-owned transport protocol version is unsupported.",
+            incompatible["errors"],
+        )
+        self.assertIn(
+            "CAI-owned transport runtime version is invalid.",
+            incompatible["errors"],
+        )
+        self.assertIn(
+            "CAI-owned transport adapter version is missing.",
+            incompatible["errors"],
+        )
 
 
 if __name__ == "__main__":
