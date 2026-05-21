@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import unittest
 
 from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
 from cai_compute_chain import cai_owned_transport_common as common
 from cai_compute_chain import cai_owned_llm_runtime_metadata as llm_runtime_metadata
+from cai_compute_chain import cai_owned_transport_batch_lifecycle as batch_lifecycle
 from cai_compute_chain import cai_owned_transport_execution_plan as execution_plan
 from cai_compute_chain import cai_owned_transport_ids as transport_ids
 from cai_compute_chain import cai_owned_transport_payload_codec as payload_codec
@@ -103,6 +105,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute._cai_owned_transport_proof_batch_ids,
             transport_receipts.cai_owned_transport_proof_batch_ids,
+        )
+        self.assertIs(
+            decentralized_compute._apply_cai_owned_transport_batch_lease,
+            batch_lifecycle.apply_cai_owned_transport_batch_lease,
+        )
+        self.assertIs(
+            decentralized_compute._clear_cai_owned_transport_batch_runtime_claim,
+            batch_lifecycle.clear_cai_owned_transport_batch_runtime_claim,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
@@ -395,6 +405,70 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             ),
             5,
         )
+
+    def test_batch_lifecycle_helpers_preserve_claim_and_timeout_state(self) -> None:
+        now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+        batch = {
+            "runtimeId": "runtime-a",
+            "heartbeatAt": "old",
+            "leaseExpiresAt": "old",
+            "leaseSeconds": 1,
+            "claimedByNodeId": "node-a",
+        }
+
+        batch_lifecycle.apply_cai_owned_transport_batch_lease(
+            batch,
+            now,
+            lease_seconds=30,
+        )
+        self.assertEqual(batch["heartbeatAt"], now.isoformat())
+        self.assertEqual(batch["leaseSeconds"], 30.0)
+        self.assertFalse(
+            batch_lifecycle.cai_owned_transport_batch_lease_expired(
+                batch,
+                now + timedelta(seconds=29),
+            )
+        )
+        self.assertTrue(
+            batch_lifecycle.cai_owned_transport_batch_lease_expired(
+                batch,
+                now + timedelta(seconds=30),
+            )
+        )
+        self.assertEqual(
+            batch_lifecycle.cai_owned_transport_batch_attempt_count(
+                {"attemptCount": "3"}
+            ),
+            3,
+        )
+        self.assertTrue(
+            batch_lifecycle.cai_owned_transport_batch_claim_expired(
+                {"updatedAt": (now - timedelta(seconds=31)).isoformat()},
+                now,
+                timeout_seconds=30,
+            )
+        )
+
+        batch_lifecycle.mark_cai_owned_transport_batch_timed_out(
+            batch,
+            now,
+            error="lease expired",
+            reason="lease_timeout",
+        )
+        self.assertEqual(batch["status"], "timed_out")
+        self.assertEqual(batch["timeoutReason"], "lease_timeout")
+        self.assertFalse(batch["retryable"])
+
+        batch_lifecycle.clear_cai_owned_transport_batch_runtime_claim(batch)
+        self.assertEqual(batch["previousRuntimeId"], "runtime-a")
+        for key in (
+            "runtimeId",
+            "heartbeatAt",
+            "leaseExpiresAt",
+            "leaseSeconds",
+            "claimedByNodeId",
+        ):
+            self.assertNotIn(key, batch)
 
 
 if __name__ == "__main__":

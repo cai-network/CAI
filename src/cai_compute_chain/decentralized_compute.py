@@ -38,6 +38,17 @@ from .cai_owned_transport_auth import (
     validate_cai_owned_transport_payload_signature,
     validate_cai_owned_transport_request_auth,
 )
+from .cai_owned_transport_batch_lifecycle import (
+    apply_cai_owned_transport_batch_lease as _apply_cai_owned_transport_batch_lease,
+    cai_owned_transport_batch_attempt_count as _cai_owned_transport_batch_attempt_count,
+    cai_owned_transport_batch_claim_expired as _cai_owned_transport_batch_claim_expired,
+    cai_owned_transport_batch_lease_expired as _cai_owned_transport_batch_lease_expired,
+    clear_cai_owned_transport_batch_runtime_claim as _clear_cai_owned_transport_batch_runtime_claim,
+    coerce_cai_owned_transport_batch_claim_timeout_seconds as _coerce_cai_owned_transport_batch_claim_timeout_seconds,
+    coerce_cai_owned_transport_batch_lease_seconds as _coerce_cai_owned_transport_batch_lease_seconds,
+    coerce_cai_owned_transport_max_attempts as _coerce_cai_owned_transport_max_attempts,
+    mark_cai_owned_transport_batch_timed_out as _mark_cai_owned_transport_batch_timed_out,
+)
 from .cai_owned_llm_runtime_metadata import (
     require_runtime_metadata_layer_range_supported as _require_runtime_metadata_layer_range_supported,
     runtime_metadata_bool as _runtime_metadata_bool,
@@ -90,9 +101,6 @@ from .cai_owned_transport_protocol import (
     CAI_OWNED_TRANSPORT_BATCH_ENVELOPE_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_BATCH_PHASES,
     CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS,
-    CAI_OWNED_TRANSPORT_DEFAULT_BATCH_CLAIM_TIMEOUT_SECONDS,
-    CAI_OWNED_TRANSPORT_DEFAULT_BATCH_LEASE_SECONDS,
-    CAI_OWNED_TRANSPORT_DEFAULT_MAX_BATCH_ATTEMPTS,
     CAI_OWNED_TRANSPORT_EXECUTION_DAG_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_EXECUTION_PIPELINE_FULL_PREFILL_DECODE,
     CAI_OWNED_TRANSPORT_EXECUTION_PIPELINE_SINGLE_PASS_FINAL_DECODE,
@@ -7717,112 +7725,6 @@ def _validate_cai_owned_transport_processed_batch_execution_audit(
                 normalized_chain_hash,
             )
     return True, None, normalized_chain_hash
-
-
-def _apply_cai_owned_transport_batch_lease(
-    batch: dict[str, Any],
-    now: datetime,
-    lease_seconds: float | int | None,
-) -> None:
-    seconds = _coerce_cai_owned_transport_batch_lease_seconds(lease_seconds)
-    batch["heartbeatAt"] = now.isoformat()
-    batch["leaseSeconds"] = seconds
-    batch["leaseExpiresAt"] = (now + timedelta(seconds=seconds)).isoformat()
-
-
-def _cai_owned_transport_batch_lease_expired(
-    batch: dict[str, Any],
-    now: datetime,
-) -> bool:
-    lease_expires_at = _parse_cai_owned_transport_datetime(
-        batch.get("leaseExpiresAt")
-    )
-    if lease_expires_at is None:
-        return True
-    return lease_expires_at <= now
-
-
-def _coerce_cai_owned_transport_batch_lease_seconds(
-    value: float | int | None,
-) -> float:
-    if value is None:
-        return CAI_OWNED_TRANSPORT_DEFAULT_BATCH_LEASE_SECONDS
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return CAI_OWNED_TRANSPORT_DEFAULT_BATCH_LEASE_SECONDS
-
-
-def _coerce_cai_owned_transport_batch_claim_timeout_seconds(
-    value: float | int | None,
-) -> float:
-    if value is None:
-        return CAI_OWNED_TRANSPORT_DEFAULT_BATCH_CLAIM_TIMEOUT_SECONDS
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return CAI_OWNED_TRANSPORT_DEFAULT_BATCH_CLAIM_TIMEOUT_SECONDS
-
-
-def _coerce_cai_owned_transport_max_attempts(value: int | None) -> int:
-    if value is None:
-        return CAI_OWNED_TRANSPORT_DEFAULT_MAX_BATCH_ATTEMPTS
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return CAI_OWNED_TRANSPORT_DEFAULT_MAX_BATCH_ATTEMPTS
-
-
-def _cai_owned_transport_batch_attempt_count(batch: Mapping[str, Any]) -> int:
-    try:
-        return max(0, int(batch.get("attemptCount") or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _cai_owned_transport_batch_claim_expired(
-    batch: Mapping[str, Any],
-    now: datetime,
-    timeout_seconds: float,
-) -> bool:
-    reference = (
-        _parse_cai_owned_transport_datetime(batch.get("updatedAt"))
-        or _parse_cai_owned_transport_datetime(batch.get("createdAt"))
-    )
-    if reference is None:
-        return True
-    return reference + timedelta(seconds=timeout_seconds) <= now
-
-
-def _mark_cai_owned_transport_batch_timed_out(
-    batch: dict[str, Any],
-    now: datetime,
-    *,
-    error: str,
-    reason: str,
-) -> None:
-    now_iso = now.isoformat()
-    batch["status"] = "timed_out"
-    batch["updatedAt"] = now_iso
-    batch["timedOutAt"] = now_iso
-    batch["timeoutReason"] = reason
-    batch["lastError"] = error
-    batch["error"] = error
-    batch["retryable"] = False
-
-
-def _clear_cai_owned_transport_batch_runtime_claim(batch: dict[str, Any]) -> None:
-    runtime_id = str(batch.get("runtimeId") or "").strip()
-    if runtime_id:
-        batch["previousRuntimeId"] = runtime_id
-    for key in (
-        "runtimeId",
-        "heartbeatAt",
-        "leaseExpiresAt",
-        "leaseSeconds",
-        "claimedByNodeId",
-    ):
-        batch.pop(key, None)
 
 
 def _append_unique(values: list[Any], value: object) -> None:
