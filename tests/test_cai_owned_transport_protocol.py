@@ -63,6 +63,18 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             transport_auth.validate_cai_owned_transport_local_runtime_auth,
         )
         self.assertIs(
+            decentralized_compute._validate_cai_owned_transport_chain_id,
+            common.validate_cai_owned_transport_chain_id,
+        )
+        self.assertIs(
+            decentralized_compute._jsonable_dict,
+            common.jsonable_dict,
+        )
+        self.assertIs(
+            decentralized_compute._optional_int,
+            common.optional_int,
+        )
+        self.assertIs(
             decentralized_compute._decode_cai_owned_transport_batch_payload,
             payload_codec.decode_cai_owned_transport_batch_payload,
         )
@@ -151,6 +163,30 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 prefix="caistage_",
             ),
             "caistage_stage-1",
+        )
+        self.assertEqual(
+            common.cai_owned_transport_payload_chain_id(
+                {"network": " MAINNET "}
+            ),
+            "mainnet",
+        )
+        self.assertEqual(
+            common.validate_cai_owned_transport_chain_id(
+                {"chainId": "mainnet", "network": "mainnet"},
+                expected_chain_id="mainnet",
+                payload_name="test payload",
+            ),
+            (True, None, "mainnet"),
+        )
+        self.assertEqual(
+            common.normalize_sha256_hex("A" * 64, field_name="hash"),
+            "a" * 64,
+        )
+        self.assertIsNone(common.optional_sha256_hex(None, field_name="hash"))
+        self.assertEqual(common.optional_int("42"), 42)
+        self.assertEqual(
+            common.jsonable_dict({"value": 7}, field_name="payload"),
+            {"value": 7},
         )
 
     def test_peer_url_helpers_parse_overlay_targets(self) -> None:

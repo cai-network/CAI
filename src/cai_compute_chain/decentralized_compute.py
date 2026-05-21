@@ -67,10 +67,16 @@ from .cai_owned_transport_peer_urls import (
 )
 from .cai_owned_transport_common import (
     cai_owned_transport_chain_id as _cai_owned_transport_chain_id,
+    cai_owned_transport_payload_chain_id as _cai_owned_transport_payload_chain_id,
     clean_node_ids as _clean_node_ids,
     is_safe_transport_file_id as _is_safe_transport_file_id,
+    jsonable_dict as _jsonable_dict,
+    normalize_sha256_hex as _normalize_sha256_hex,
+    optional_int as _optional_int,
+    optional_sha256_hex as _optional_sha256_hex,
     parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
     require_safe_transport_file_id as _require_safe_transport_file_id,
+    validate_cai_owned_transport_chain_id as _validate_cai_owned_transport_chain_id,
 )
 from .cai_owned_transport_execution_plan import (
     cai_owned_transport_layer_ranges as _cai_owned_transport_layer_ranges,
@@ -7562,53 +7568,6 @@ def _require_cai_owned_transport_batch_completion_owner(
         raise ValueError("CAI-owned transport batch lease has expired.")
 
 
-def _cai_owned_transport_payload_chain_id(payload: dict[str, Any]) -> str | None:
-    chain_id = str(
-        payload.get("chainId") or payload.get("chain_id") or ""
-    ).strip().lower()
-    network = str(payload.get("network") or "").strip().lower()
-    return chain_id or network or None
-
-
-def _validate_cai_owned_transport_chain_id(
-    payload: dict[str, Any],
-    *,
-    expected_chain_id: str,
-    payload_name: str,
-) -> tuple[bool, str | None, str | None]:
-    chain_id = str(
-        payload.get("chainId") or payload.get("chain_id") or ""
-    ).strip().lower()
-    network = str(payload.get("network") or "").strip().lower()
-    if chain_id and network and chain_id != network:
-        return (
-            False,
-            (
-                f"CAI-owned transport {payload_name} has mismatched chain id "
-                f"'{chain_id}' and network '{network}'."
-            ),
-            None,
-        )
-    incoming = chain_id or network
-    if not incoming:
-        return (
-            False,
-            f"CAI-owned transport {payload_name} chain id is missing.",
-            None,
-        )
-    expected = str(expected_chain_id or "").strip().lower()
-    if expected and incoming != expected:
-        return (
-            False,
-            (
-                f"CAI-owned transport {payload_name} is for chain '{incoming}', "
-                f"expected '{expected}'."
-            ),
-            incoming,
-        )
-    return True, None, incoming
-
-
 def _validate_cai_owned_transport_batch_replay(
     existing_batch: dict[str, Any],
     *,
@@ -7728,44 +7687,3 @@ def _validate_cai_owned_transport_processed_batch_execution_audit(
                 normalized_chain_hash,
             )
     return True, None, normalized_chain_hash
-
-
-def _jsonable_dict(value: dict[str, Any], *, field_name: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"CAI-owned transport {field_name} must be an object.")
-    try:
-        return json.loads(json.dumps(value, sort_keys=True, default=str))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"CAI-owned transport {field_name} must be JSON serializable."
-        ) from exc
-
-
-def _normalize_sha256_hex(
-    value: object,
-    *,
-    field_name: str,
-) -> str:
-    clean = str(value or "").strip().lower()
-    if len(clean) != 64 or any(ch not in "0123456789abcdef" for ch in clean):
-        raise ValueError(f"CAI-owned transport {field_name} must be sha256 hex.")
-    return clean
-
-
-def _optional_sha256_hex(
-    value: object,
-    *,
-    field_name: str,
-) -> str | None:
-    if value is None or str(value or "").strip() == "":
-        return None
-    return _normalize_sha256_hex(value, field_name=field_name)
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

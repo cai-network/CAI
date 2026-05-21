@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from .model import MoneyPolicy, WalletPolicy
 
@@ -59,3 +61,91 @@ def require_safe_transport_file_id(value: object, *, prefix: str) -> str:
     if not is_safe_transport_file_id(clean, prefix=prefix):
         raise ValueError("CAI-owned transport storage id is invalid.")
     return clean
+
+
+def cai_owned_transport_payload_chain_id(payload: dict[str, Any]) -> str | None:
+    chain_id = str(
+        payload.get("chainId") or payload.get("chain_id") or ""
+    ).strip().lower()
+    network = str(payload.get("network") or "").strip().lower()
+    return chain_id or network or None
+
+
+def validate_cai_owned_transport_chain_id(
+    payload: dict[str, Any],
+    *,
+    expected_chain_id: str,
+    payload_name: str,
+) -> tuple[bool, str | None, str | None]:
+    chain_id = str(
+        payload.get("chainId") or payload.get("chain_id") or ""
+    ).strip().lower()
+    network = str(payload.get("network") or "").strip().lower()
+    if chain_id and network and chain_id != network:
+        return (
+            False,
+            (
+                f"CAI-owned transport {payload_name} has mismatched chain id "
+                f"'{chain_id}' and network '{network}'."
+            ),
+            None,
+        )
+    incoming = chain_id or network
+    if not incoming:
+        return (
+            False,
+            f"CAI-owned transport {payload_name} chain id is missing.",
+            None,
+        )
+    expected = str(expected_chain_id or "").strip().lower()
+    if expected and incoming != expected:
+        return (
+            False,
+            (
+                f"CAI-owned transport {payload_name} is for chain '{incoming}', "
+                f"expected '{expected}'."
+            ),
+            incoming,
+        )
+    return True, None, incoming
+
+
+def jsonable_dict(value: dict[str, Any], *, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"CAI-owned transport {field_name} must be an object.")
+    try:
+        return json.loads(json.dumps(value, sort_keys=True, default=str))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"CAI-owned transport {field_name} must be JSON serializable."
+        ) from exc
+
+
+def normalize_sha256_hex(
+    value: object,
+    *,
+    field_name: str,
+) -> str:
+    clean = str(value or "").strip().lower()
+    if len(clean) != 64 or any(ch not in "0123456789abcdef" for ch in clean):
+        raise ValueError(f"CAI-owned transport {field_name} must be sha256 hex.")
+    return clean
+
+
+def optional_sha256_hex(
+    value: object,
+    *,
+    field_name: str,
+) -> str | None:
+    if value is None or str(value or "").strip() == "":
+        return None
+    return normalize_sha256_hex(value, field_name=field_name)
+
+
+def optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
