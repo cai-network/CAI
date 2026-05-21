@@ -78,6 +78,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             decentralized_compute._cai_owned_transport_output_route_plan_from_dag,
             execution_plan.cai_owned_transport_output_route_plan_from_dag,
         )
+        self.assertIs(
+            decentralized_compute._execution_mode_for_compute_cell,
+            execution_plan.execution_mode_for_compute_cell,
+        )
+        self.assertIs(
+            decentralized_compute._clean_sink_node_ids,
+            execution_plan.clean_sink_node_ids,
+        )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
         self.assertEqual(
@@ -132,6 +140,47 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             )
 
     def test_execution_plan_helpers_preserve_shard_ranges(self) -> None:
+        self.assertEqual(
+            execution_plan.clean_sink_node_ids(
+                "node-a",
+                ["node-a", "node-b", "node-b", "", "node-c"],
+            ),
+            ["node-b", "node-c"],
+        )
+        self.assertEqual(
+            execution_plan.execution_mode_for_compute_cell(
+                {"profile": "single_node", "readyForLlamaCppRpc": False}
+            ),
+            protocol.EXECUTION_MODE_SINGLE_NODE,
+        )
+        self.assertEqual(
+            execution_plan.execution_mode_for_compute_cell(
+                {"profile": "low_latency_sharded_cell", "readyForLlamaCppRpc": True}
+            ),
+            protocol.EXECUTION_MODE_LLAMA_CPP_RPC_LOW_LATENCY,
+        )
+        self.assertEqual(
+            execution_plan.execution_mode_for_compute_cell(
+                {
+                    "profile": "proven_unknown_latency_sharded_cell",
+                    "readyForLlamaCppRpc": True,
+                }
+            ),
+            protocol.EXECUTION_MODE_LLAMA_CPP_RPC_PROVEN_UNKNOWN_LATENCY,
+        )
+        self.assertEqual(
+            execution_plan.execution_mode_for_compute_cell(
+                {"profile": "wan_risky_sharded_cell", "reason": "WAN path."}
+            ),
+            protocol.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
+        )
+        self.assertIn(
+            "WAN path.",
+            execution_plan.execution_reason(
+                protocol.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
+                {"reason": "WAN path."},
+            ),
+        )
         self.assertEqual(
             execution_plan.normalize_cai_owned_transport_shard_ranges(
                 ["node-a", "node-b", "node-c"],

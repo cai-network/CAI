@@ -61,6 +61,9 @@ from .cai_owned_transport_common import (
 from .cai_owned_transport_execution_plan import (
     cai_owned_transport_layer_ranges as _cai_owned_transport_layer_ranges,
     cai_owned_transport_output_route_plan_from_dag as _cai_owned_transport_output_route_plan_from_dag,
+    clean_sink_node_ids as _clean_sink_node_ids,
+    execution_mode_for_compute_cell as _execution_mode_for_compute_cell,
+    execution_reason as _execution_reason,
     normalize_cai_owned_transport_shard_ranges as _normalize_cai_owned_transport_shard_ranges,
 )
 from .cai_owned_transport_ids import (
@@ -7128,50 +7131,6 @@ def validate_cai_owned_transport_execution_proof(
                 "CAI-owned transport proof hash chain does not match execution audit."
             )
     return True, None
-
-
-def _execution_mode_for_compute_cell(profile: dict[str, Any]) -> str:
-    profile_name = str(profile.get("profile") or "").strip()
-    rpc_ready = bool(profile.get("readyForLlamaCppRpc"))
-    if profile_name == "single_node":
-        return EXECUTION_MODE_SINGLE_NODE
-    if profile_name == "low_latency_sharded_cell" and rpc_ready:
-        return EXECUTION_MODE_LLAMA_CPP_RPC_LOW_LATENCY
-    if profile_name == "proven_unknown_latency_sharded_cell" and rpc_ready:
-        return EXECUTION_MODE_LLAMA_CPP_RPC_PROVEN_UNKNOWN_LATENCY
-    return EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED
-
-
-def _execution_reason(execution_mode: str, profile: dict[str, Any]) -> str:
-    if execution_mode == EXECUTION_MODE_SINGLE_NODE:
-        return "No remote shard participant is required for this execution."
-    if execution_mode == EXECUTION_MODE_LLAMA_CPP_RPC_LOW_LATENCY:
-        return "Standard llama.cpp RPC is allowed because the compute-cell is low-latency."
-    if execution_mode == EXECUTION_MODE_LLAMA_CPP_RPC_PROVEN_UNKNOWN_LATENCY:
-        return (
-            "Standard llama.cpp RPC is provisionally allowed, but CAI should still "
-            "measure latency before production placement."
-        )
-    profile_reason = str(profile.get("reason") or "").strip()
-    if profile_reason:
-        return (
-            f"{profile_reason} CAI-owned transport is required for WAN-safe "
-            "distributed execution."
-        )
-    return "CAI-owned transport is required for WAN-safe distributed execution."
-
-
-def _clean_sink_node_ids(source_node_id: str, sink_node_ids: Sequence[str]) -> list[str]:
-    source = str(source_node_id or "").strip()
-    sinks: list[str] = []
-    seen: set[str] = set()
-    for node_id in sink_node_ids:
-        clean = str(node_id or "").strip()
-        if not clean or clean == source or clean in seen:
-            continue
-        seen.add(clean)
-        sinks.append(clean)
-    return sinks
 
 
 def _cai_owned_transport_llm_runtime_metadata(
