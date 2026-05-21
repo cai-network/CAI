@@ -6,6 +6,7 @@ import unittest
 
 from cai_compute_chain import cai_owned_transport_peer_urls as peer_urls
 from cai_compute_chain import cai_owned_transport_common as common
+from cai_compute_chain import cai_owned_llm_runtime_metadata as llm_runtime_metadata
 from cai_compute_chain import cai_owned_transport_execution_plan as execution_plan
 from cai_compute_chain import cai_owned_transport_ids as transport_ids
 from cai_compute_chain import cai_owned_transport_payload_codec as payload_codec
@@ -85,6 +86,14 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertIs(
             decentralized_compute._clean_sink_node_ids,
             execution_plan.clean_sink_node_ids,
+        )
+        self.assertIs(
+            decentralized_compute._runtime_metadata_text,
+            llm_runtime_metadata.runtime_metadata_text,
+        )
+        self.assertIs(
+            decentralized_compute._require_runtime_metadata_layer_range_supported,
+            llm_runtime_metadata.require_runtime_metadata_layer_range_supported,
         )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
@@ -261,6 +270,69 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_llm_runtime_metadata_helpers_preserve_descriptor_fields(self) -> None:
+        metadata = {
+            "model_id": "model-a",
+            "total_layers": "12",
+            "activation_shape": ["1", "3", "768"],
+            "layerRangeSupported": "true",
+            "shardCompatibility": "layer_range_supported",
+            "preferredFilename": "model.gguf",
+            "context_length": "2048",
+            "kvCache": {"format": "caikv-v1"},
+        }
+
+        self.assertEqual(
+            llm_runtime_metadata.runtime_metadata_text(
+                metadata,
+                "modelId",
+                "model_id",
+            ),
+            "model-a",
+        )
+        self.assertEqual(
+            llm_runtime_metadata.runtime_metadata_int(
+                metadata,
+                "totalLayerCount",
+                "total_layers",
+            ),
+            12,
+        )
+        self.assertIs(
+            llm_runtime_metadata.runtime_metadata_bool(
+                metadata,
+                "layerRangeSupported",
+            ),
+            True,
+        )
+        self.assertEqual(
+            llm_runtime_metadata.runtime_metadata_shape(metadata),
+            [1, 3, 768],
+        )
+        self.assertEqual(
+            llm_runtime_metadata.runtime_metadata_mapping(metadata, "kvCache"),
+            {"format": "caikv-v1"},
+        )
+        self.assertEqual(
+            llm_runtime_metadata.runtime_metadata_external_shard_descriptor(metadata),
+            {
+                "preferredFilename": "model.gguf",
+                "shardCompatibility": "layer_range_supported",
+                "layerRangeSupported": True,
+                "contextLength": 2048,
+            },
+        )
+
+        llm_runtime_metadata.require_runtime_metadata_layer_range_supported(
+            metadata,
+            model_id="model-a",
+        )
+        with self.assertRaisesRegex(ValueError, "layerRangeSupported is false"):
+            llm_runtime_metadata.require_runtime_metadata_layer_range_supported(
+                {"layerRangeSupported": False},
+                model_id="model-a",
+            )
 
 
 if __name__ == "__main__":
