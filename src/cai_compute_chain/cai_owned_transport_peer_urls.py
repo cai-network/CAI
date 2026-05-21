@@ -68,6 +68,29 @@ def cai_owned_transport_peer_url_route_class(peer_cai_url: str) -> str:
     return "overlay_generic"
 
 
+def parse_cai_owned_transport_overlay_url(value: str) -> tuple[str, str] | None:
+    raw = str(value or "").strip()
+    if not raw.startswith(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX):
+        return None
+    rest = raw[len(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX) :].strip()
+    parsed = urlsplit(rest)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "CAI-owned transport overlay URL must be "
+            "cai-overlay:http(s)://host:port?targetNodeId=<node_id>."
+        )
+    query = parse_qs(parsed.query)
+    target_node_id = (
+        (query.get("targetNodeId") or query.get("target_node_id") or [""])[0]
+    ).strip()
+    if not target_node_id:
+        raise ValueError("CAI-owned transport overlay URL targetNodeId is required.")
+    relay_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+    if not relay_url:
+        raise ValueError("CAI-owned transport overlay relay URL is required.")
+    return relay_url, target_node_id
+
+
 def _overlay_relay_role(query: str) -> str:
     parsed_query = parse_qs(query)
     return str(

@@ -30,6 +30,10 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             peer_urls.CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX,
             protocol.CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX,
         )
+        self.assertIs(
+            decentralized_compute._parse_cai_owned_transport_overlay_url,
+            peer_urls.parse_cai_owned_transport_overlay_url,
+        )
         self.assertEqual(
             decentralized_compute.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
             protocol.EXECUTION_MODE_CAI_OWNED_TRANSPORT_REQUIRED,
@@ -108,6 +112,24 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             ),
             "caistage_stage-1",
         )
+
+    def test_peer_url_helpers_parse_overlay_targets(self) -> None:
+        self.assertEqual(
+            peer_urls.parse_cai_owned_transport_overlay_url(
+                "cai-overlay:https://relay.example:52415/path?targetNodeId=node-b"
+            ),
+            ("https://relay.example:52415/path", "node-b"),
+        )
+        self.assertEqual(
+            peer_urls.parse_cai_owned_transport_overlay_url(
+                "http://direct.example:52415"
+            ),
+            None,
+        )
+        with self.assertRaisesRegex(ValueError, "targetNodeId"):
+            peer_urls.parse_cai_owned_transport_overlay_url(
+                "cai-overlay:https://relay.example:52415"
+            )
 
     def test_execution_plan_helpers_preserve_shard_ranges(self) -> None:
         self.assertEqual(

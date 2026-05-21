@@ -11,7 +11,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .gguf_shard_policy import (
@@ -48,6 +48,7 @@ from .cai_owned_transport_peer_urls import (
     cai_owned_transport_peer_url_priority as _cai_owned_transport_peer_url_priority,
     cai_owned_transport_peer_url_route_class as _cai_owned_transport_peer_url_route_class,
     clean_peer_cai_urls as _clean_peer_cai_urls,
+    parse_cai_owned_transport_overlay_url as _parse_cai_owned_transport_overlay_url,
     prioritized_cai_owned_transport_peer_urls as _prioritized_cai_owned_transport_peer_urls,
 )
 from .cai_owned_transport_common import (
@@ -7171,29 +7172,6 @@ def _clean_sink_node_ids(source_node_id: str, sink_node_ids: Sequence[str]) -> l
         seen.add(clean)
         sinks.append(clean)
     return sinks
-
-
-def _parse_cai_owned_transport_overlay_url(value: str) -> tuple[str, str] | None:
-    raw = str(value or "").strip()
-    if not raw.startswith(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX):
-        return None
-    rest = raw[len(CAI_OWNED_TRANSPORT_OVERLAY_URL_PREFIX) :].strip()
-    parsed = urlsplit(rest)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(
-            "CAI-owned transport overlay URL must be "
-            "cai-overlay:http(s)://host:port?targetNodeId=<node_id>."
-        )
-    query = parse_qs(parsed.query)
-    target_node_id = (
-        (query.get("targetNodeId") or query.get("target_node_id") or [""])[0]
-    ).strip()
-    if not target_node_id:
-        raise ValueError("CAI-owned transport overlay URL targetNodeId is required.")
-    relay_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
-    if not relay_url:
-        raise ValueError("CAI-owned transport overlay relay URL is required.")
-    return relay_url, target_node_id
 
 
 def _cai_owned_transport_llm_runtime_metadata(
