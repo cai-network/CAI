@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import hashlib
 import json
 import secrets
@@ -77,6 +77,7 @@ from .cai_owned_transport_common import (
     parse_cai_owned_transport_datetime as _parse_cai_owned_transport_datetime,
     require_safe_transport_file_id as _require_safe_transport_file_id,
     validate_cai_owned_transport_chain_id as _validate_cai_owned_transport_chain_id,
+    validate_cai_owned_transport_created_at as _validate_cai_owned_transport_created_at,
 )
 from .cai_owned_transport_execution_plan import (
     cai_owned_transport_layer_ranges as _cai_owned_transport_layer_ranges,
@@ -106,7 +107,6 @@ from .cai_owned_transport_protocol import (
     CAI_OWNED_TRANSPORT_BATCH_ENVELOPE_MAX_AGE_SECONDS,
     CAI_OWNED_TRANSPORT_BATCH_ENVELOPE_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_BATCH_PHASES,
-    CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS,
     CAI_OWNED_TRANSPORT_EXECUTION_DAG_SCHEMA_VERSION,
     CAI_OWNED_TRANSPORT_EXECUTION_PIPELINE_FULL_PREFILL_DECODE,
     CAI_OWNED_TRANSPORT_EXECUTION_PIPELINE_SINGLE_PASS_FINAL_DECODE,
@@ -166,30 +166,6 @@ from .cai_owned_transport_storage import (
     save_cai_owned_transport_replay_cache,
     save_cai_owned_transport_sessions,
 )
-
-
-def _validate_cai_owned_transport_created_at(
-    payload: Mapping[str, Any],
-    *,
-    payload_name: str,
-    max_age_seconds: float | None,
-    now: datetime | None = None,
-) -> tuple[bool, str | None]:
-    created_at = _parse_cai_owned_transport_datetime(payload.get("createdAt"))
-    if created_at is None:
-        return False, f"CAI-owned transport {payload_name} createdAt is invalid."
-    reference_now = (now or datetime.now(tz=UTC)).astimezone(UTC)
-    if created_at > reference_now + timedelta(
-        seconds=CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS
-    ):
-        return False, (
-            f"CAI-owned transport {payload_name} createdAt is too far in the future."
-        )
-    if max_age_seconds is not None and created_at + timedelta(
-        seconds=max(0.0, float(max_age_seconds))
-    ) < reference_now:
-        return False, f"CAI-owned transport {payload_name} has expired."
-    return True, None
 
 
 def build_cai_owned_transport_session_offer(

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .model import MoneyPolicy, WalletPolicy
+from .cai_owned_transport_protocol import CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS
 
 
 def clean_node_ids(node_ids: Sequence[str]) -> list[str]:
@@ -44,6 +45,30 @@ def parse_cai_owned_transport_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def validate_cai_owned_transport_created_at(
+    payload: Mapping[str, Any],
+    *,
+    payload_name: str,
+    max_age_seconds: float | None,
+    now: datetime | None = None,
+) -> tuple[bool, str | None]:
+    created_at = parse_cai_owned_transport_datetime(payload.get("createdAt"))
+    if created_at is None:
+        return False, f"CAI-owned transport {payload_name} createdAt is invalid."
+    reference_now = (now or datetime.now(tz=UTC)).astimezone(UTC)
+    if created_at > reference_now + timedelta(
+        seconds=CAI_OWNED_TRANSPORT_CLOCK_SKEW_SECONDS
+    ):
+        return False, (
+            f"CAI-owned transport {payload_name} createdAt is too far in the future."
+        )
+    if max_age_seconds is not None and created_at + timedelta(
+        seconds=max(0.0, float(max_age_seconds))
+    ) < reference_now:
+        return False, f"CAI-owned transport {payload_name} has expired."
+    return True, None
 
 
 def is_safe_transport_file_id(value: object, *, prefix: str) -> bool:

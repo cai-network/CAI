@@ -67,6 +67,10 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             common.validate_cai_owned_transport_chain_id,
         )
         self.assertIs(
+            decentralized_compute._validate_cai_owned_transport_created_at,
+            common.validate_cai_owned_transport_created_at,
+        )
+        self.assertIs(
             decentralized_compute._jsonable_dict,
             common.jsonable_dict,
         )
@@ -187,6 +191,25 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
         self.assertEqual(
             common.jsonable_dict({"value": 7}, field_name="payload"),
             {"value": 7},
+        )
+        now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+        self.assertEqual(
+            common.validate_cai_owned_transport_created_at(
+                {"createdAt": now.isoformat()},
+                payload_name="test payload",
+                max_age_seconds=60,
+                now=now,
+            ),
+            (True, None),
+        )
+        self.assertEqual(
+            common.validate_cai_owned_transport_created_at(
+                {"createdAt": (now - timedelta(seconds=61)).isoformat()},
+                payload_name="test payload",
+                max_age_seconds=60,
+                now=now,
+            ),
+            (False, "CAI-owned transport test payload has expired."),
         )
 
     def test_peer_url_helpers_parse_overlay_targets(self) -> None:
