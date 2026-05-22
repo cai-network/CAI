@@ -618,6 +618,102 @@ def _chain_backed_funding_wallet(
     )
 
 
+def _request_payload_model_id(
+    request_payload_override: Mapping[str, Any] | None,
+) -> str | None:
+    if not isinstance(request_payload_override, Mapping):
+        return None
+    model_id = str(request_payload_override.get("model") or "").strip()
+    return model_id or None
+
+
+def _request_payload_model_matches_job(
+    payload_model_id: str | None,
+    *,
+    job_model_id: str,
+    execution_model_id: str,
+    network_model_policy: NetworkModelPolicy,
+) -> bool:
+    if not payload_model_id:
+        return True
+    normalized_payload_model_id = normalize_network_model_id(
+        payload_model_id,
+        network_model_policy,
+    )
+    payload_execution_model_id = resolve_execution_model_id(
+        payload_model_id,
+        network_model_policy,
+    )
+    return (
+        payload_model_id == job_model_id
+        or payload_model_id == execution_model_id
+        or normalized_payload_model_id == job_model_id
+        or payload_execution_model_id == execution_model_id
+    )
+
+
+def _validate_request_payload_model_matches_job(
+    *,
+    job_model_id: str,
+    execution_model_id: str,
+    request_payload_override: Mapping[str, Any] | None,
+    network_model_policy: NetworkModelPolicy | None = None,
+) -> None:
+    active_network_model_policy = network_model_policy or NetworkModelPolicy()
+    payload_model_id = _request_payload_model_id(request_payload_override)
+    if _request_payload_model_matches_job(
+        payload_model_id,
+        job_model_id=job_model_id,
+        execution_model_id=execution_model_id,
+        network_model_policy=active_network_model_policy,
+    ):
+        return
+    raise ValueError(
+        f"Request payload model '{payload_model_id}' does not match metered job "
+        f"model '{job_model_id}' or execution model '{execution_model_id}'. "
+        "Refusing to execute a different model than the job selected."
+    )
+
+
+def _model_selection_audit(
+    *,
+    job_model_id: str,
+    execution_model_id: str,
+    request_payload_override: Mapping[str, Any] | None,
+    network_model_policy: NetworkModelPolicy | None = None,
+) -> dict[str, Any]:
+    active_network_model_policy = network_model_policy or NetworkModelPolicy()
+    payload_model_id = _request_payload_model_id(request_payload_override)
+    normalized_payload_model_id = (
+        normalize_network_model_id(payload_model_id, active_network_model_policy)
+        if payload_model_id
+        else None
+    )
+    payload_execution_model_id = (
+        resolve_execution_model_id(payload_model_id, active_network_model_policy)
+        if payload_model_id
+        else None
+    )
+    matches_job = _request_payload_model_matches_job(
+        payload_model_id,
+        job_model_id=job_model_id,
+        execution_model_id=execution_model_id,
+        network_model_policy=active_network_model_policy,
+    )
+    return {
+        "status": "matched" if matches_job else "mismatch",
+        "jobModelId": job_model_id,
+        "executionModelId": execution_model_id,
+        "requestPayloadModelId": payload_model_id,
+        "normalizedRequestPayloadModelId": normalized_payload_model_id,
+        "requestPayloadExecutionModelId": payload_execution_model_id,
+        "requestPayloadMatchesJob": matches_job,
+        "requestPayloadModelOverridden": bool(
+            payload_model_id and payload_model_id != execution_model_id
+        ),
+    }
+
+
 def _log_best_effort_failure(operation: str, exc: Exception) -> None:
     LOGGER.warning("%s failed: %s: %s", operation, type(exc).__name__, exc)
 
@@ -850,6 +946,18 @@ def execute_job_intent(
     execution_model_id = resolve_execution_model_id(
         job.model_id, active_network_model_policy
     )
+    try:
+        _validate_request_payload_model_matches_job(
+            job_model_id=job.model_id,
+            execution_model_id=execution_model_id,
+            request_payload_override=request_payload_override,
+            network_model_policy=active_network_model_policy,
+        )
+    except ValueError as exc:
+        job.status = "failed"
+        job.last_error = str(exc)
+        update_job_intent(job, wallet_policy)
+        raise
     execution_cai_url = (job.execution_cai_url or job.cai_url).rstrip("/")
     private_network_model = is_private_curated_model_id(
         job.model_id,
@@ -1219,6 +1327,12 @@ def execute_job_intent(
         network_audit["executionAttempts"] = list(job.execution_attempts)
         network_audit["executionAttemptCount"] = len(job.execution_attempts)
     network_audit["preflightPeerSync"] = preflight_peer_sync_audit
+    network_audit["modelSelection"] = _model_selection_audit(
+        job_model_id=job.model_id,
+        execution_model_id=execution_model_id,
+        request_payload_override=request_payload_override,
+        network_model_policy=active_network_model_policy,
+    )
     record_route_health_from_network_audit(network_audit, policy=wallet_policy)
     participant_eligibility = _build_participant_eligibility_audit(
         state_payload=execution_state_payload,
@@ -4368,4 +4482,3 @@ def _validator_attestation_endpoint(source_url: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(f"Unsupported validator source URL: {source_url}")
     return f"{parsed.scheme}://{parsed.netloc}/v1/cai/settlement/attest"
-

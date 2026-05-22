@@ -33,6 +33,7 @@ from cai_compute_chain.jobs import (
     _resolve_cai_instance_create_payload_for_nodes,
     _select_task_level_transport_executor_node_ids,
     _submit_text_job_to_cai,
+    _model_selection_audit,
     _require_settleable_instance_snapshot,
     _task_level_transport_effective_executor_count,
     _task_level_transport_executor_fallback_attempts,
@@ -42,6 +43,7 @@ from cai_compute_chain.jobs import (
     _sync_worker_reward_bindings_from_cai,
     _task_level_transport_instance_snapshot,
     _task_level_transport_total_layer_count,
+    _validate_request_payload_model_matches_job,
     _worker_model_allowed,
     apply_local_validator_attestation,
     cai_instance_readiness_audit,
@@ -78,7 +80,7 @@ from cai_compute_chain.chain import (
     make_chain_transaction,
     record_chain_transaction,
 )
-from cai_compute_chain.model import MoneyPolicy, PaymentPreference
+from cai_compute_chain.model import MoneyPolicy, NetworkModelPolicy, PaymentPreference
 from cai_compute_chain.node_capabilities import (
     NodeCapabilityRecord,
     save_node_capabilities,
@@ -220,6 +222,41 @@ class JobIntentTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].job_id, job.job_id)
         self.assertEqual(jobs[0].status, "created")
+
+    def test_request_payload_model_validation_accepts_execution_alias(self) -> None:
+        policy = NetworkModelPolicy()
+
+        _validate_request_payload_model_matches_job(
+            job_model_id="cai-network/Qwen3-0.6B-GGUF",
+            execution_model_id="Qwen/Qwen3-0.6B-GGUF",
+            request_payload_override={"model": "Qwen/Qwen3-0.6B-GGUF"},
+            network_model_policy=policy,
+        )
+
+        audit = _model_selection_audit(
+            job_model_id="cai-network/Qwen3-0.6B-GGUF",
+            execution_model_id="Qwen/Qwen3-0.6B-GGUF",
+            request_payload_override={"model": "Qwen/Qwen3-0.6B-GGUF"},
+            network_model_policy=policy,
+        )
+
+        self.assertEqual(audit["status"], "matched")
+        self.assertTrue(audit["requestPayloadMatchesJob"])
+        self.assertFalse(audit["requestPayloadModelOverridden"])
+
+    def test_request_payload_model_validation_rejects_model_drift(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "does not match metered job model",
+        ):
+            _validate_request_payload_model_matches_job(
+                job_model_id="cai-network/Qwen3-0.6B-GGUF",
+                execution_model_id="Qwen/Qwen3-0.6B-GGUF",
+                request_payload_override={
+                    "model": "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+                },
+                network_model_policy=NetworkModelPolicy(),
+            )
 
     def test_create_job_intent_persists_requester_node_id(self) -> None:
         wallet = create_wallet("main", "testpass", select=True)
