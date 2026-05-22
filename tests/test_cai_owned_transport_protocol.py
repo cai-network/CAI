@@ -164,6 +164,22 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
             decentralized_compute._summary_model_id_matches,
             summary_helpers.summary_model_id_matches,
         )
+        self.assertIs(
+            decentralized_compute._summary_resource_headroom_audit,
+            summary_helpers.summary_resource_headroom_audit,
+        )
+        self.assertIs(
+            decentralized_compute._summary_cai_owned_transport_readiness,
+            summary_helpers.summary_cai_owned_transport_readiness,
+        )
+        self.assertIs(
+            decentralized_compute._summary_layer_ranges,
+            summary_helpers.summary_layer_ranges,
+        )
+        self.assertIs(
+            decentralized_compute._summary_missing_required_ranges,
+            summary_helpers.summary_missing_required_ranges,
+        )
 
     def test_common_helpers_match_legacy_transport_expectations(self) -> None:
         self.assertEqual(
@@ -758,6 +774,64 @@ class CaiOwnedTransportProtocolTests(unittest.TestCase):
                 "MODEL-A",
             )
         )
+
+    def test_summary_helpers_audit_resources_and_cai_readiness(self) -> None:
+        ok = summary_helpers.summary_resource_headroom_audit(
+            {"resourceSummary": {"ramAvailableBytes": 2048}},
+            {"resources": {"vramAvailableBytes": 4096}},
+            minimum_ram_headroom_bytes=1024,
+            minimum_vram_headroom_bytes=2048,
+        )
+        self.assertTrue(ok["ready"])
+        self.assertEqual(ok["reason"], "resource_headroom_ok")
+        self.assertEqual(ok["ramAvailableBytes"], 2048)
+        self.assertEqual(ok["vramAvailableBytes"], 4096)
+
+        low = summary_helpers.summary_resource_headroom_audit(
+            {"resources": {"ramAvailableBytes": 64}},
+            {},
+            minimum_ram_headroom_bytes=128,
+            minimum_vram_headroom_bytes=0,
+        )
+        self.assertFalse(low["ready"])
+        self.assertEqual(low["reason"], "resource_headroom_insufficient")
+        self.assertEqual(low["insufficientResources"], ["ram"])
+
+        readiness = summary_helpers.summary_cai_owned_transport_readiness(
+            {"readiness": {"cai_owned_transport": {"status": "ready"}}},
+            {},
+        )
+        self.assertEqual(readiness, {"status": "ready"})
+
+    def test_summary_helpers_parse_shard_ranges_and_block_reasons(self) -> None:
+        merged = summary_helpers.summary_layer_ranges(
+            [
+                {"layerStart": 0, "layerEnd": 2, "ready": True},
+                {"layer_start": 2, "layer_end": 4, "status": "ready"},
+                {"start": 5, "end": 6, "ready": False},
+            ],
+            assume_ready=False,
+        )
+        self.assertEqual(merged, [{"layerStart": 0, "layerEnd": 4}])
+        self.assertEqual(
+            summary_helpers.summary_missing_required_ranges(
+                [{"layerStart": 0, "layerEnd": 4}],
+                [{"layerStart": 0, "layerEnd": 2}],
+            ),
+            [{"layerStart": 0, "layerEnd": 4}],
+        )
+        blocked = summary_helpers.summary_blocked_ranges_from_candidate(
+            {
+                "shards": [
+                    {
+                        "layerStart": 0,
+                        "layerEnd": 1,
+                        "chunkManifestVerified": False,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(blocked[0]["reason"], "chunk_manifest_not_verified")
 
 
 if __name__ == "__main__":
