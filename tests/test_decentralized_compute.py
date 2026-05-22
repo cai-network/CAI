@@ -1267,6 +1267,13 @@ def test_dispatch_cai_owned_transport_execution_dag_resume_checks_remote_complet
 
 
 def test_dispatch_cai_owned_transport_execution_dag_retries_prepared_initial_batch() -> None:
+    public_key_b64, signing_seed_b64 = _signing_material()
+    signing_material = {
+        "public_key_b64": public_key_b64,
+        "signing_seed_b64": signing_seed_b64,
+        "wallet_id": "wallet-user",
+        "address": "abcd1234",
+    }
     first_attempt_urls: list[str] = []
     second_attempt_urls: list[str] = []
 
@@ -1302,6 +1309,7 @@ def test_dispatch_cai_owned_transport_execution_dag_retries_prepared_initial_bat
                     total_layer_count=28,
                     model_id="cai-network/Qwen3-0.6B-GGUF",
                     task_id="task-dispatch-retry-prepared",
+                    signing_material=signing_material,
                     policy=policy,
                 )
         prepared = list_cai_owned_transport_sessions(policy)[0]
@@ -1323,6 +1331,7 @@ def test_dispatch_cai_owned_transport_execution_dag_retries_prepared_initial_bat
                 total_layer_count=28,
                 model_id="cai-network/Qwen3-0.6B-GGUF",
                 task_id="task-dispatch-retry-prepared",
+                signing_material=signing_material,
                 policy=policy,
             )
 
@@ -5600,6 +5609,7 @@ def test_reconcile_cai_owned_transport_session_timeouts_marks_unclaimed_batch_fa
 
 
 def test_reconcile_cai_owned_transport_session_timeouts_retries_then_times_out_processing_batch() -> None:
+    public_key_b64, signing_seed_b64 = _signing_material()
     with tempfile.TemporaryDirectory() as tempdir, patch(
         "cai_compute_chain.wallet.repo_root",
         return_value=Path(tempdir),
@@ -5611,6 +5621,14 @@ def test_reconcile_cai_owned_transport_session_timeouts_retries_then_times_out_p
             model_id="cai-network/Qwen3-0.6B-GGUF",
             task_id="task-processing-timeout",
             source_node_id="node-a",
+        )
+        offer = sign_cai_owned_transport_session_offer(
+            offer,
+            signer_node_id="node-a",
+            public_key_b64=public_key_b64,
+            signing_seed_b64=signing_seed_b64,
+            signer_wallet_id="wallet-node-a",
+            signer_address="abcd1234",
         )
         create_cai_owned_transport_session_from_offer(
             offer,
@@ -5625,6 +5643,14 @@ def test_reconcile_cai_owned_transport_session_timeouts_retries_then_times_out_p
             sink_node_id="node-b",
             sequence=1,
             payload=b"processing-batch",
+        )
+        envelope = sign_cai_owned_transport_batch_envelope(
+            envelope,
+            signer_node_id="node-a",
+            public_key_b64=public_key_b64,
+            signing_seed_b64=signing_seed_b64,
+            signer_wallet_id="wallet-node-a",
+            signer_address="abcd1234",
         )
         record_cai_owned_transport_batch_envelope(
             offer["sessionId"],
