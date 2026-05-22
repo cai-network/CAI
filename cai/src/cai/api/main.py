@@ -1847,6 +1847,9 @@ class API:
         )
         self.app.get("/v1/cai/route-health")(self.get_cai_route_health)
         self.app.get("/v1/cai/compute-cells")(self.get_cai_compute_cells)
+        self.app.get("/v1/cai/distributed-inference/diagnostics")(
+            self.get_cai_distributed_inference_diagnostics
+        )
         self.app.get("/v1/cai/transport/sessions")(self.get_cai_transport_sessions)
         self.app.get("/v1/cai/transport/batch-inbox")(
             self.get_cai_transport_batch_inbox
@@ -2457,6 +2460,19 @@ class API:
     def get_cai_compute_cells(self):
         try:
             return self._get_cai_service().compute_cells()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def get_cai_distributed_inference_diagnostics(
+        self,
+        request: Request,
+        model_id: str | None = None,
+    ):
+        self._require_local_request(request)
+        try:
+            return self._get_cai_service().distributed_inference_diagnostics(
+                model_id=model_id,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

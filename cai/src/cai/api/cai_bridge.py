@@ -219,6 +219,9 @@ class CaiBridgeService:
                 "lastError": str(exc),
                 "records": [],
             }
+        distributed_inference = self._distributed_inference_diagnostics_for_node(
+            local_node_id=local_runtime_node_id,
+        )
         worker_summary["runtime_queue"] = runtime_queue
         worker_summary["runtimeQueue"] = runtime_queue
         worker_reward_address = self._local_worker_reward_address()
@@ -325,6 +328,7 @@ class CaiBridgeService:
             "worker": worker_summary,
             "reward": snapshot.get("reward", {}),
             "compute": snapshot["compute"],
+            "distributedInference": distributed_inference,
             "diagnostics": {
                 "maintenanceStatus": "degraded" if maintenance_errors else "ok",
                 "statePayloadAvailable": isinstance(state_payload, dict),
@@ -366,6 +370,64 @@ class CaiBridgeService:
             ),
             "latestPayout": _payout_to_summary(latest_payout, self.money_policy, to_coins),
         }
+
+    def distributed_inference_diagnostics(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            state_payload = self._load_state_payload()
+        except Exception:
+            state_payload = None
+        local_runtime_node_id = (
+            _resolve_local_runtime_node_id(
+                state_payload=state_payload,
+                local_node_id=self.local_node_id,
+            )
+            if isinstance(state_payload, dict)
+            else self.local_node_id
+        )
+        return self._distributed_inference_diagnostics_for_node(
+            local_node_id=local_runtime_node_id,
+            model_id=model_id,
+        )
+
+    def _distributed_inference_diagnostics_for_node(
+        self,
+        *,
+        local_node_id: str | None,
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_model_id = (
+            str(model_id or "").strip()
+            or self.network_model_policy.network_default_model_id
+        )
+        try:
+            return self.modules.cai_owned_diagnostics.build_distributed_inference_diagnostics(
+                local_node_id=local_node_id,
+                model_id=resolved_model_id,
+                max_records=20,
+                policy=self.wallet_policy,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "schemaVersion": 1,
+                "status": "error",
+                "localNodeId": local_node_id,
+                "modelId": resolved_model_id,
+                "workerCount": 0,
+                "readyExecutorCount": 0,
+                "runtimeReadyExecutorCount": 0,
+                "modelReadyExecutorCount": 0,
+                "routeReadyExecutorCount": 0,
+                "directRouteReadyExecutorCount": 0,
+                "relayRouteReadyExecutorCount": 0,
+                "readyRouteClasses": [],
+                "blockingReasons": ["diagnostics_unavailable"],
+                "error": str(exc),
+                "executors": [],
+            }
 
     def cancel_update(self) -> dict[str, Any]:
         return self.modules.update_channel.cancel_pending_portable_update()

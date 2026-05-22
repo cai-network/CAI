@@ -355,6 +355,193 @@ def test_distributed_inference_diagnostics_reports_ready_direct_executors() -> N
     )
 
 
+def test_distributed_inference_diagnostics_reports_single_ready_direct_executor() -> None:
+    model_id = "cai-network/Qwen3-0.6B-GGUF"
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id=model_id,
+        node_capabilities=[
+            NodeCapabilityRecord(
+                node_id="node-a",
+                source="test",
+                source_url=None,
+                last_seen_at="2026-05-04T00:00:00+00:00",
+                updated_at="2026-05-04T00:00:00+00:00",
+                worker_enabled=True,
+                model_ids=[model_id],
+                readiness={
+                    "caiOwnedTransport": {
+                        "runtimeReady": True,
+                        "runtimeReadyProof": {"verified": True},
+                        "llmShardSelfTest": {
+                            "contractReady": True,
+                            "productionReady": True,
+                            "generationProbeReady": True,
+                            "backendHealthReady": True,
+                        },
+                    },
+                },
+            )
+        ],
+        route_health_records=[
+            RouteHealthRecord(
+                route_id="route-a",
+                source_node_id="requester",
+                sink_node_id="node-a",
+                route_type="direct_data",
+                reachable=True,
+                checked_at="2026-05-04T00:00:00+00:00",
+                endpoint_url="http://node-a:52415/data",
+            )
+        ],
+    )
+
+    assert diagnostics["status"] == "ready"
+    assert diagnostics["readyExecutorCount"] == 1
+    assert diagnostics["directRouteReadyExecutorCount"] == 1
+    assert diagnostics["executors"][0]["readyForDistributedInference"] is True
+    assert diagnostics["executors"][0]["routeReason"] == "direct_route_ready"
+
+
+def test_distributed_inference_diagnostics_reports_overlay_only_executor_blocker() -> None:
+    model_id = "cai-network/Qwen3-0.6B-GGUF"
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id=model_id,
+        node_capabilities=[
+            NodeCapabilityRecord(
+                node_id="node-a",
+                source="test",
+                source_url=None,
+                last_seen_at="2026-05-04T00:00:00+00:00",
+                updated_at="2026-05-04T00:00:00+00:00",
+                worker_enabled=True,
+                model_ids=[model_id],
+                readiness={
+                    "caiOwnedTransport": {
+                        "runtimeReady": True,
+                        "runtimeReadyProof": {"verified": True},
+                        "llmShardSelfTest": {
+                            "contractReady": True,
+                            "productionReady": True,
+                            "generationProbeReady": True,
+                            "backendHealthReady": True,
+                        },
+                    },
+                },
+            )
+        ],
+        route_health_records=[
+            RouteHealthRecord(
+                route_id="route-overlay",
+                source_node_id="requester",
+                sink_node_id="node-a",
+                route_type="overlay_peer",
+                reachable=True,
+                checked_at="2026-05-04T00:00:00+00:00",
+                endpoint_url="http://node-a:52415/overlay",
+            )
+        ],
+    )
+
+    assert diagnostics["status"] == "blocked"
+    assert diagnostics["readyExecutorCount"] == 0
+    assert diagnostics["routeReadyExecutorCount"] == 0
+    assert "data_plane_route_missing" in diagnostics["blockingReasons"]
+    assert diagnostics["executors"][0]["routeClass"] == "overlay"
+    assert diagnostics["executors"][0]["routeReason"] == "data_plane_route_missing"
+
+
+def test_distributed_inference_diagnostics_reports_model_shard_missing() -> None:
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id="cai-network/Qwen3-0.6B-GGUF",
+        node_capabilities=[
+            NodeCapabilityRecord(
+                node_id="node-a",
+                source="test",
+                source_url=None,
+                last_seen_at="2026-05-04T00:00:00+00:00",
+                updated_at="2026-05-04T00:00:00+00:00",
+                worker_enabled=True,
+                readiness={
+                    "caiOwnedTransport": {
+                        "runtimeReady": True,
+                        "runtimeReadyProof": {"verified": True},
+                        "llmShardSelfTest": {
+                            "contractReady": True,
+                            "productionReady": True,
+                            "generationProbeReady": True,
+                            "backendHealthReady": True,
+                        },
+                    },
+                },
+            )
+        ],
+        route_health_records=[
+            RouteHealthRecord(
+                route_id="route-a",
+                source_node_id="requester",
+                sink_node_id="node-a",
+                route_type="direct_data",
+                reachable=True,
+                checked_at="2026-05-04T00:00:00+00:00",
+                endpoint_url="http://node-a:52415/data",
+            )
+        ],
+    )
+
+    assert diagnostics["status"] == "blocked"
+    assert diagnostics["routeReadyExecutorCount"] == 1
+    assert diagnostics["runtimeReadyExecutorCount"] == 1
+    assert diagnostics["modelReadyExecutorCount"] == 0
+    assert "model_not_advertised" in diagnostics["blockingReasons"]
+    assert diagnostics["executors"][0]["modelReason"] == "model_not_advertised"
+
+
+def test_distributed_inference_diagnostics_reports_transport_not_runtime_ready() -> None:
+    model_id = "cai-network/Qwen3-0.6B-GGUF"
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id=model_id,
+        node_capabilities=[
+            NodeCapabilityRecord(
+                node_id="node-a",
+                source="test",
+                source_url=None,
+                last_seen_at="2026-05-04T00:00:00+00:00",
+                updated_at="2026-05-04T00:00:00+00:00",
+                worker_enabled=True,
+                model_ids=[model_id],
+                readiness={
+                    "caiOwnedTransport": {
+                        "runtimeReady": False,
+                        "runtimeReadyProof": {"verified": False},
+                    },
+                },
+            )
+        ],
+        route_health_records=[
+            RouteHealthRecord(
+                route_id="route-a",
+                source_node_id="requester",
+                sink_node_id="node-a",
+                route_type="direct_data",
+                reachable=True,
+                checked_at="2026-05-04T00:00:00+00:00",
+                endpoint_url="http://node-a:52415/data",
+            )
+        ],
+    )
+
+    assert diagnostics["status"] == "blocked"
+    assert diagnostics["routeReadyExecutorCount"] == 1
+    assert diagnostics["modelReadyExecutorCount"] == 1
+    assert diagnostics["runtimeReadyExecutorCount"] == 0
+    assert "cai_owned_transport_not_runtime_ready" in diagnostics["blockingReasons"]
+    assert diagnostics["executors"][0]["runtimeReady"] is False
+
+
 def test_distributed_inference_diagnostics_reports_model_and_route_blockers() -> None:
     diagnostics = build_distributed_inference_diagnostics(
         local_node_id="requester",

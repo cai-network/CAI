@@ -393,6 +393,22 @@ def _distributed_route_audit(
             score,
             selected,
         )
+    if selected.reachable and route_class == "overlay":
+        return _route_audit_payload(
+            False,
+            route_class,
+            "data_plane_route_missing",
+            score,
+            selected,
+        )
+    if selected.reachable:
+        return _route_audit_payload(
+            False,
+            route_class,
+            "route_class_unsupported",
+            score,
+            selected,
+        )
     return _route_audit_payload(
         False,
         route_class,

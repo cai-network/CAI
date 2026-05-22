@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2025 cai Technologies Ltd
 # SPDX-FileCopyrightText: 2026 CAI contributors
 # SPDX-License-Identifier: Apache-2.0
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,10 +18,14 @@ def _make_api(summary_local_only: bool) -> API:
     api = object.__new__(API)
     api.app = app
     api.port = 52415
+    api.node_id = NodeId("node-local")
     api.state = {}
     api.summary_local_only = summary_local_only
     api.state_local_only = summary_local_only
     app.get("/v1/cai/summary")(api.get_cai_summary)
+    app.get("/v1/cai/distributed-inference/diagnostics")(
+        api.get_cai_distributed_inference_diagnostics
+    )
     app.get("/state")(api.get_state)
     app.get("/state/{path:path}")(api.get_state)
     return api
@@ -59,6 +64,37 @@ def test_cai_summary_allows_local_requests_when_local_only() -> None:
     assert response.status_code == 200
     assert response.json() == {"available": True}
     summary_mock.assert_called_once()
+
+
+def test_cai_distributed_inference_diagnostics_allows_local_requests() -> None:
+    api = _make_api(summary_local_only=False)
+    service = SimpleNamespace(
+        distributed_inference_diagnostics=Mock(return_value={"status": "ready"})
+    )
+    api._get_cai_service = lambda: service
+    client = TestClient(api.app, client=("127.0.0.1", 40000))
+
+    response = client.get(
+        "/v1/cai/distributed-inference/diagnostics?model_id=model-a"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+    service.distributed_inference_diagnostics.assert_called_once_with(
+        model_id="model-a"
+    )
+
+
+def test_cai_distributed_inference_diagnostics_blocks_public_requests() -> None:
+    api = _make_api(summary_local_only=False)
+    service = SimpleNamespace(distributed_inference_diagnostics=Mock())
+    api._get_cai_service = lambda: service
+    client = TestClient(api.app, client=("198.51.100.20", 40000))
+
+    response = client.get("/v1/cai/distributed-inference/diagnostics")
+
+    assert response.status_code == 404
+    service.distributed_inference_diagnostics.assert_not_called()
 
 
 def test_state_blocks_public_requests_when_local_only() -> None:
