@@ -145,3 +145,45 @@ async def test_check_runner_marks_clean_exit_with_pending_task_as_failed() -> No
     with anyio.move_on_after(0.1):
         await event_receiver.aclose()
 
+
+@pytest.mark.asyncio
+async def test_check_runner_preserves_existing_runner_failure_message() -> None:
+    event_sender, event_receiver = channel[Event]()
+    task_sender, _ = mp_channel[Task]()
+    cancel_sender, _ = mp_channel[TaskId]()
+    _, ev_recv = mp_channel[Event]()
+
+    bound_instance: BoundInstance = get_bound_mlx_ring_instance(
+        instance_id=InstanceId("instance-bootstrap-failure"),
+        model_id=ModelId("Qwen/Qwen3-0.6B-GGUF"),
+        runner_id=RunnerId("runner-bootstrap-failure"),
+        node_id=NodeId("node-bootstrap-failure"),
+    )
+
+    supervisor = RunnerSupervisor(
+        shard_metadata=bound_instance.bound_shard,
+        bound_instance=bound_instance,
+        runner_process=cast("mp.Process", cast(object, _DeadProcess(exitcode=0))),
+        initialize_timeout=400,
+        _ev_recv=ev_recv,
+        _task_sender=task_sender,
+        _event_sender=event_sender,
+        _cancel_sender=cancel_sender,
+    )
+    supervisor.status = RunnerFailed(error_message="llama-server binary not found")
+    pending_event = anyio.Event()
+    supervisor.pending[TaskId("task-bootstrap-failure")] = pending_event
+    supervisor.shutdown = lambda: None
+
+    await supervisor._check_runner(RuntimeError("runner closed"))  # pyright: ignore[reportPrivateUsage]
+
+    got_status = await event_receiver.receive()
+
+    assert isinstance(got_status, RunnerStatusUpdated)
+    assert isinstance(got_status.runner_status, RunnerFailed)
+    assert got_status.runner_status.error_message == "llama-server binary not found"
+    assert pending_event.is_set()
+
+    event_sender.close()
+    with anyio.move_on_after(0.1):
+        await event_receiver.aclose()

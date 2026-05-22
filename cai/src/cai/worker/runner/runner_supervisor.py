@@ -277,6 +277,13 @@ class RunnerSupervisor:
         else:
             cause = f"exitcode={rc}"
 
+        existing_failure_message = (
+            self.status.error_message
+            if isinstance(self.status, RunnerFailed) and self.status.error_message
+            else None
+        )
+        reported_cause = existing_failure_message or f"Terminated ({cause})"
+
         logger.opt(exception=e).error(f"Runner terminated with {cause}")
 
         for task in self.in_progress.values():
@@ -289,14 +296,14 @@ class RunnerSupervisor:
                                 model=self.shard_metadata.model_card.model_id,
                                 error_message=(
                                     "Runner shutdown before completing command "
-                                    f"({cause})"
+                                    f"({reported_cause})"
                                 ),
                             ),
                         )
                     )
 
         try:
-            self.status = RunnerFailed(error_message=f"Terminated ({cause})")
+            self.status = RunnerFailed(error_message=reported_cause)
             with anyio.CancelScope(shield=True):
                 await self._event_sender.send(
                     RunnerStatusUpdated(
@@ -313,4 +320,3 @@ class RunnerSupervisor:
         self.pending.clear()
         self.in_progress.clear()
         self.shutdown()
-
