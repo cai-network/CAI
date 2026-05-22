@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from cai_compute_chain.cai_owned_diagnostics import (  # noqa: E402
     build_cai_owned_diagnostics_snapshot,
+    build_distributed_inference_diagnostics,
     build_cai_owned_worker_runtime_queue_snapshot,
 )
 from cai_compute_chain.cai_owned_runtime import (  # noqa: E402
@@ -33,6 +34,7 @@ from cai_compute_chain.node_capabilities import (  # noqa: E402
     save_node_capabilities,
 )
 from cai_compute_chain.route_health import record_route_health  # noqa: E402
+from cai_compute_chain.route_health import RouteHealthRecord  # noqa: E402
 from cai_compute_chain.wallet import create_wallet, unlock_wallet  # noqa: E402
 
 
@@ -186,6 +188,7 @@ def test_cai_owned_diagnostics_snapshot_exports_secret_safe_network_state() -> N
 
         snapshot = build_cai_owned_diagnostics_snapshot(
             local_node_id="node-b",
+            model_id="cai-network/Qwen3-0.6B-GGUF",
             max_records=10,
             policy=policy,
         )
@@ -211,6 +214,12 @@ def test_cai_owned_diagnostics_snapshot_exports_secret_safe_network_state() -> N
     assert snapshot["summary"]["runtimeReadyNodeCount"] == 0
     assert snapshot["summary"]["llmContractReadyNodeCount"] == 0
     assert snapshot["summary"]["llmProductionReadyNodeCount"] == 0
+    assert snapshot["distributedInference"]["status"] == "blocked"
+    assert snapshot["distributedInference"]["workerCount"] == 1
+    assert snapshot["distributedInference"]["readyExecutorCount"] == 0
+    assert "cai_owned_transport_not_runtime_ready" in snapshot[
+        "distributedInference"
+    ]["blockingReasons"]
     assert snapshot["llmShardSelfTest"]["backendHealthReady"] is False
     assert snapshot["llmShardSelfTest"]["generationProbeReady"] is False
     assert snapshot["llmShardSelfTest"]["backendHealth"]["status"] == "degraded"
@@ -254,6 +263,7 @@ def test_cai_owned_diagnostics_cli_outputs_json_snapshot() -> None:
         output = handle_cai_owned_diagnostics(
             wallet_data_dirname=".tmp-cai-owned-diagnostics-cli",
             local_node_id="node-b",
+            model_id="cai-network/Qwen3-0.6B-GGUF",
             max_records=5,
         )
 
@@ -261,3 +271,113 @@ def test_cai_owned_diagnostics_cli_outputs_json_snapshot() -> None:
     assert snapshot["schemaVersion"] == 1
     assert snapshot["summary"]["sessionCount"] == 1
     assert snapshot["caiOwnedTransport"]["localNodeId"] == "node-b"
+    assert snapshot["distributedInference"]["modelId"] == "cai-network/Qwen3-0.6B-GGUF"
+
+
+def test_distributed_inference_diagnostics_reports_ready_direct_executors() -> None:
+    readiness = {
+        "caiOwnedTransport": {
+            "runtimeReady": True,
+            "runtimeReadyProof": {"verified": True},
+            "llmShardSelfTest": {
+                "contractReady": True,
+                "productionReady": True,
+                "generationProbeReady": True,
+                "backendHealthReady": True,
+            },
+        },
+        "modelShardInventory": {
+            "cai-network/Qwen3-0.6B-GGUF": {
+                "status": "ready",
+            }
+        },
+    }
+    records = [
+        NodeCapabilityRecord(
+            node_id="node-a",
+            source="test",
+            source_url=None,
+            last_seen_at="2026-05-04T00:00:00+00:00",
+            updated_at="2026-05-04T00:00:00+00:00",
+            worker_enabled=True,
+            worker_allowed_model_ids=["cai-network/Qwen3-0.6B-GGUF"],
+            readiness=readiness,
+        ),
+        NodeCapabilityRecord(
+            node_id="node-b",
+            source="test",
+            source_url=None,
+            last_seen_at="2026-05-04T00:00:00+00:00",
+            updated_at="2026-05-04T00:00:00+00:00",
+            worker_enabled=True,
+            model_ids=["cai-network/Qwen3-0.6B-GGUF"],
+            readiness=readiness,
+        ),
+    ]
+    routes = [
+        RouteHealthRecord(
+            route_id="route-a",
+            source_node_id="requester",
+            sink_node_id="node-a",
+            route_type="direct_data",
+            reachable=True,
+            checked_at="2026-05-04T00:00:00+00:00",
+            endpoint_url="http://node-a:52415/data?token=secret",
+        ),
+        RouteHealthRecord(
+            route_id="route-b",
+            source_node_id="requester",
+            sink_node_id="node-b",
+            route_type="direct_data",
+            reachable=True,
+            checked_at="2026-05-04T00:00:00+00:00",
+            endpoint_url="http://node-b:52415/data?token=secret",
+        ),
+    ]
+
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id="cai-network/Qwen3-0.6B-GGUF",
+        node_capabilities=records,
+        route_health_records=routes,
+    )
+
+    assert diagnostics["status"] == "ready"
+    assert diagnostics["workerCount"] == 2
+    assert diagnostics["readyExecutorCount"] == 2
+    assert diagnostics["directRouteReadyExecutorCount"] == 2
+    assert diagnostics["relayRouteReadyExecutorCount"] == 0
+    assert diagnostics["runtimeReadyExecutorCount"] == 2
+    assert diagnostics["modelReadyExecutorCount"] == 2
+    assert diagnostics["blockingReasons"] == []
+    assert diagnostics["executors"][0]["selectedRoute"]["endpointUrl"] == (
+        "http://node-a:52415/data"
+    )
+
+
+def test_distributed_inference_diagnostics_reports_model_and_route_blockers() -> None:
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id="cai-network/Qwen3-0.6B-GGUF",
+        node_capabilities=[
+            NodeCapabilityRecord(
+                node_id="node-a",
+                source="test",
+                source_url=None,
+                last_seen_at="2026-05-04T00:00:00+00:00",
+                updated_at="2026-05-04T00:00:00+00:00",
+                worker_enabled=True,
+                worker_allowed_model_ids=["other/model"],
+                readiness={},
+            )
+        ],
+        route_health_records=[],
+    )
+
+    assert diagnostics["status"] == "blocked"
+    assert diagnostics["readyExecutorCount"] == 0
+    assert diagnostics["routeReadyExecutorCount"] == 0
+    assert diagnostics["modelReadyExecutorCount"] == 0
+    assert "model_not_allowed" in diagnostics["blockingReasons"]
+    assert "route_health_missing" in diagnostics["blockingReasons"]
+    assert "cai_owned_transport_not_runtime_ready" in diagnostics["blockingReasons"]
