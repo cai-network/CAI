@@ -36,7 +36,12 @@ from cai.worker.tests.unittests.conftest import (
 )
 
 
-def _write_cai_manifest_for_llama_model(tmp_path: Path, model_id: str) -> model_dist.ModelPackageManifest:
+def _write_cai_manifest_for_llama_model(
+    tmp_path: Path,
+    model_id: str,
+    *,
+    cache_layer_range: tuple[int, int] | None = None,
+) -> model_dist.ModelPackageManifest:
     artifact_bytes = b"llama-cpp-chunk-ready"
     artifact_path = tmp_path / "model.gguf"
     artifact_path.write_bytes(artifact_bytes)
@@ -47,9 +52,16 @@ def _write_cai_manifest_for_llama_model(tmp_path: Path, model_id: str) -> model_
         gguf_path=artifact_path,
         total_layers=8,
         source_repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        min_chunk_bytes=4,
+        max_chunk_bytes=4,
     )
     model_dist.save_model_package_manifest(manifest)
-    for chunk in manifest.chunks:
+    chunks_to_cache = (
+        manifest.required_chunks_for_layers(*cache_layer_range)
+        if cache_layer_range is not None
+        else manifest.chunks
+    )
+    for chunk in chunks_to_cache:
         payload = artifact_bytes[
             chunk.offset_bytes : chunk.offset_bytes + chunk.size_bytes
         ]
@@ -534,6 +546,141 @@ def test_plan_loads_distributed_llama_cpp_when_remote_peer_inventory_covers_shar
 
     assert isinstance(result, LoadModel)
     assert result.instance_id == instance.instance_id
+
+
+def test_plan_loads_distributed_llama_cpp_with_only_assigned_chunks_cached(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setattr(model_dist, "data_root", lambda policy=None: tmp_path)
+    plan_mod._get_cai_model_distribution_module.cache_clear()
+
+    bound_instance = _build_two_node_llama_bound_instance(device_rank=0)
+    manifest = _write_cai_manifest_for_llama_model(
+        tmp_path,
+        str(bound_instance.bound_shard.model_card.model_id),
+        cache_layer_range=(0, 4),
+    )
+    local_required_ids = {
+        chunk.chunk_id for chunk in manifest.required_chunks_for_layers(0, 4)
+    }
+    remote_required_ids = {
+        chunk.chunk_id for chunk in manifest.required_chunks_for_layers(4, 8)
+    }
+    assert remote_required_ids - local_required_ids
+
+    model_dist.import_chunk_inventory_payload(
+        model_dist.ChunkInventoryPayload(
+            source_id="node-b",
+            source_kind=model_dist.ChunkInventorySourceKind.PEER_CACHE,
+            published_at=datetime.now(tz=UTC).isoformat(),
+            records=(
+                model_dist.ChunkInventoryRecord(
+                    catalog_id=manifest.catalog_id,
+                    version=manifest.version,
+                    chunk_ids=tuple(sorted(remote_required_ids)),
+                    chunk_count=len(remote_required_ids),
+                    total_bytes=sum(
+                        chunk.size_bytes
+                        for chunk in manifest.chunks
+                        if chunk.chunk_id in remote_required_ids
+                    ),
+                ),
+            ),
+        )
+    )
+
+    runner = FakeRunnerSupervisor(
+        bound_instance=bound_instance,
+        status=RunnerConnected(),
+    )
+    instance = bound_instance.instance
+
+    result = plan_mod.plan(
+        node_id=bound_instance.bound_node_id,
+        runners={bound_instance.bound_runner_id: runner},  # type: ignore[arg-type]
+        global_download_status={
+            bound_instance.bound_node_id: [],
+            NodeId("node-b"): [],
+        },
+        instances={instance.instance_id: instance},
+        all_runners={
+            RunnerId("runner-a"): RunnerConnected(),
+            RunnerId("runner-b"): RunnerConnected(),
+        },
+        tasks={},
+        input_chunk_buffer={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
+    )
+
+    assert isinstance(result, LoadModel)
+    assert result.instance_id == instance.instance_id
+
+
+def test_plan_waits_when_remote_peer_inventory_misses_assigned_chunk(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setattr(model_dist, "data_root", lambda policy=None: tmp_path)
+    plan_mod._get_cai_model_distribution_module.cache_clear()
+
+    bound_instance = _build_two_node_llama_bound_instance(device_rank=0)
+    manifest = _write_cai_manifest_for_llama_model(
+        tmp_path,
+        str(bound_instance.bound_shard.model_card.model_id),
+        cache_layer_range=(0, 4),
+    )
+    remote_required_ids = [
+        chunk.chunk_id for chunk in manifest.required_chunks_for_layers(4, 8)
+    ]
+    assert len(remote_required_ids) > 1
+    partial_remote_ids = remote_required_ids[:1]
+
+    model_dist.import_chunk_inventory_payload(
+        model_dist.ChunkInventoryPayload(
+            source_id="node-b",
+            source_kind=model_dist.ChunkInventorySourceKind.PEER_CACHE,
+            published_at=datetime.now(tz=UTC).isoformat(),
+            records=(
+                model_dist.ChunkInventoryRecord(
+                    catalog_id=manifest.catalog_id,
+                    version=manifest.version,
+                    chunk_ids=tuple(partial_remote_ids),
+                    chunk_count=len(partial_remote_ids),
+                    total_bytes=sum(
+                        chunk.size_bytes
+                        for chunk in manifest.chunks
+                        if chunk.chunk_id in partial_remote_ids
+                    ),
+                ),
+            ),
+        )
+    )
+
+    runner = FakeRunnerSupervisor(
+        bound_instance=bound_instance,
+        status=RunnerConnected(),
+    )
+    instance = bound_instance.instance
+
+    result = plan_mod.plan(
+        node_id=bound_instance.bound_node_id,
+        runners={bound_instance.bound_runner_id: runner},  # type: ignore[arg-type]
+        global_download_status={
+            bound_instance.bound_node_id: [],
+            NodeId("node-b"): [],
+        },
+        instances={instance.instance_id: instance},
+        all_runners={
+            RunnerId("runner-a"): RunnerConnected(),
+            RunnerId("runner-b"): RunnerConnected(),
+        },
+        tasks={},
+        input_chunk_buffer={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
+    )
+
+    assert result is None
 
 
 def test_plan_loads_distributed_llama_cpp_without_chunk_manifest(monkeypatch):
