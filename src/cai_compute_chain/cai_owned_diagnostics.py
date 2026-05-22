@@ -185,6 +185,8 @@ def build_distributed_inference_diagnostics(
             if str(reason or "").strip()
         }
     )
+    if not worker_records:
+        blockers.append("no_worker_enabled_executors")
     ready_route_classes = sorted(
         {
             str(item.get("routeClass") or "")

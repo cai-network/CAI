@@ -403,6 +403,20 @@ def test_distributed_inference_diagnostics_reports_single_ready_direct_executor(
     assert diagnostics["executors"][0]["routeReason"] == "direct_route_ready"
 
 
+def test_distributed_inference_diagnostics_reports_no_worker_blocker() -> None:
+    diagnostics = build_distributed_inference_diagnostics(
+        local_node_id="requester",
+        model_id="cai-network/Qwen3-0.6B-GGUF",
+        node_capabilities=[],
+        route_health_records=[],
+    )
+
+    assert diagnostics["status"] == "blocked"
+    assert diagnostics["workerCount"] == 0
+    assert diagnostics["readyExecutorCount"] == 0
+    assert diagnostics["blockingReasons"] == ["no_worker_enabled_executors"]
+
+
 def test_distributed_inference_diagnostics_reports_overlay_only_executor_blocker() -> None:
     model_id = "cai-network/Qwen3-0.6B-GGUF"
     diagnostics = build_distributed_inference_diagnostics(
