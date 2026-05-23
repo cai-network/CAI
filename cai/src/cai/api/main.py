@@ -90,6 +90,12 @@ from cai.api.model_compute_policy import (
 from cai.api.model_catalog_response import (
     build_model_list_response as _build_model_list_response,
 )
+from cai.api.model_placement_policy import (
+    apply_private_network_model_override as _apply_private_network_model_override,
+    llama_cpp_layer_range_supported as _llama_cpp_layer_range_supported,
+    model_card_from_instance as _model_card_from_instance,
+    validate_llama_cpp_multi_node_sharding as _validate_llama_cpp_multi_node_sharding,
+)
 from cai.api.node_capability_adapter import (
     capability_record_node_identity as _capability_record_node_identity,
     capability_record_node_memory as _capability_record_node_memory,
@@ -1327,68 +1333,6 @@ class API:
         self.app.get("/v1/traces/{task_id}/raw")(self.get_trace_raw)
         self.app.get("/onboarding")(self.get_onboarding)
         self.app.post("/onboarding")(self.complete_onboarding)
-
-    @staticmethod
-    def _apply_private_network_override_to_model_card(
-        model_card: ModelCard,
-        *,
-        private_network_model: bool,
-    ) -> ModelCard:
-        if private_network_model and not model_card.is_custom:
-            return model_card.model_copy(update={"is_custom": True})
-        return model_card
-
-    @staticmethod
-    def _model_card_from_instance(instance: Instance) -> ModelCard | None:
-        model_id = instance.shard_assignments.model_id
-        cards: list[ModelCard] = []
-        for shard in instance.shard_assignments.runner_to_shard.values():
-            model_card = getattr(shard, "model_card", None)
-            if isinstance(model_card, ModelCard):
-                cards.append(model_card)
-        if not cards:
-            return None
-        if any(card.model_id != model_id for card in cards):
-            return None
-        return cards[0]
-
-    @staticmethod
-    def _llama_cpp_layer_range_supported(model_card: ModelCard) -> bool:
-        if model_card.inference_backend != InferenceBackend.LlamaCpp:
-            return True
-        return (
-            bool(getattr(model_card, "layer_range_supported", False))
-            and str(getattr(model_card, "shard_compatibility", "") or "").strip()
-            == "layer_range_supported"
-        )
-
-    @staticmethod
-    def _validate_llama_cpp_multi_node_sharding(
-        model_card: ModelCard,
-        *,
-        min_nodes: int,
-    ) -> None:
-        if (
-            model_card.inference_backend != InferenceBackend.LlamaCpp
-            or int(min_nodes) <= 1
-            or API._llama_cpp_layer_range_supported(model_card)
-        ):
-            return
-        architecture = str(
-            getattr(model_card, "gguf_architecture", "") or "unknown"
-        ).strip()
-        compatibility = str(
-            getattr(model_card, "shard_compatibility", "") or "unsupported_for_sharding"
-        ).strip()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"GGUF architecture '{architecture}' is {compatibility}; "
-                "multi-node layer-range placement requires a successful "
-                "CAI layer-range conformance probe. Use single-node full-model "
-                "GGUF mode or add an architecture-specific probe first."
-            ),
-        )
 
     async def get_state(self, request: Request, path: str = ""):
         if self.state_local_only and not self._request_is_local(request):
@@ -3214,7 +3158,7 @@ class API:
                     await websocket.close()
 
     async def place_instance(self, payload: PlaceInstanceParams):
-        model_card = self._apply_private_network_override_to_model_card(
+        model_card = _apply_private_network_model_override(
             await ModelCard.load(payload.model_id),
             private_network_model=payload.private_network_model,
         )
@@ -3243,7 +3187,7 @@ class API:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=min_nodes,
         )
@@ -3311,10 +3255,10 @@ class API:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         self._validate_worker_only_instance(instance)
-        model_card = self._model_card_from_instance(instance)
+        model_card = _model_card_from_instance(instance)
         if model_card is None:
             model_card = await ModelCard.load(instance.shard_assignments.model_id)
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=len(instance.shard_assignments.node_to_runner),
         )
@@ -3351,7 +3295,7 @@ class API:
         min_nodes: int = 1,
         private_network_model: bool = False,
     ) -> Instance:
-        model_card = self._apply_private_network_override_to_model_card(
+        model_card = _apply_private_network_model_override(
             await ModelCard.load(model_id),
             private_network_model=private_network_model,
         )
@@ -3377,7 +3321,7 @@ class API:
             model_card=model_card,
             available_nodes=len(execution_memory),
         )
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=min_nodes,
         )
@@ -3444,7 +3388,7 @@ class API:
             return PlacementPreviewResponse(previews=[])
 
         try:
-            model_card = self._apply_private_network_override_to_model_card(
+            model_card = _apply_private_network_model_override(
                 await ModelCard.load(model_id),
                 private_network_model=private_network_model,
             )
@@ -3469,7 +3413,7 @@ class API:
                 else 1
             )
             max_nodes = max(1, len(execution_memory))
-            if not self._llama_cpp_layer_range_supported(model_card):
+            if not _llama_cpp_layer_range_supported(model_card):
                 max_nodes = 1
             instance_combinations = [
                 (Sharding.Pipeline, InstanceMeta.LlamaCpp, i)
