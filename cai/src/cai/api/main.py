@@ -99,6 +99,7 @@ from cai.api.node_capability_adapter import (
     capability_record_route_peers as _capability_record_route_peers,
     worker_identity_state as _worker_identity_state,
 )
+from cai.api.payload_path import resolve_payload_path as _resolve_payload_path
 from cai.api.peer_http import (
     bootstrap_api_base_url_for_node as _bootstrap_api_base_url_for_node,
     cai_summary_urls_by_node_id as _cai_summary_urls_by_node_id,
@@ -1460,15 +1461,7 @@ class API:
         )
 
     def _resolve_path(self, payload: Any, path: str) -> Any:
-        current = payload
-        for attr in path.split("/"):
-            if attr == "":
-                continue
-            if isinstance(current, dict):
-                current = current[attr]  # pyright: ignore[reportUnknownVariableType]
-            elif isinstance(current, list):
-                current = current[int(attr)]  # pyright: ignore[reportUnknownVariableType]
-        return current
+        return _resolve_payload_path(payload, path)
 
     @staticmethod
     def _request_is_local(request: Request) -> bool:
