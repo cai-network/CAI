@@ -9,7 +9,6 @@ import hmac
 import hashlib
 import json
 import os
-import random
 import struct
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
@@ -74,6 +73,10 @@ from cai.api.cai_bridge import load_cai_summary, make_cai_service
 from cai.api.cai_transport_errors import build_cai_transport_error_detail
 from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
+from cai.api.image_generation_helpers import (
+    ensure_seed as _ensure_seed,
+    format_to_content_type as _format_to_content_type,
+)
 from cai.api.keepalive import with_sse_keepalive
 from cai.api.model_compute_policy import (
     model_card_supported_for_cai_gguf_compute as _model_card_supported_for_cai_gguf_compute,
@@ -317,19 +320,6 @@ class NoStoreStaticFiles(StaticFiles):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
-
-
-def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
-    return f"image/{image_format or 'png'}"
-
-
-def _ensure_seed(params: AdvancedImageParams | None) -> AdvancedImageParams:
-    """Ensure advanced params has a seed set for distributed consistency."""
-    if params is None:
-        return AdvancedImageParams(seed=random.randint(0, 2**32 - 1))
-    if params.seed is None:
-        return params.model_copy(update={"seed": random.randint(0, 2**32 - 1)})
-    return params
 
 
 def _load_json_url(url: str, *, timeout: int = 5) -> dict[str, Any]:
