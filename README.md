@@ -104,6 +104,8 @@ To clone and run CAI from source, install:
 
 For real model execution, the machine also needs enough disk/RAM/VRAM for the selected GGUF model and a working `llama.cpp` runtime path. CAI can start without a loaded model, but inference requires a model/runtime that fits the device.
 
+Building the Windows portable package downloads the Windows `llama.cpp` runtime and CUDA runtime archives into `cai/.runtime/llama.cpp/windows/downloads`. Keep several gigabytes free for downloads, extraction, PyInstaller output, and the final zip.
+
 ## 🚀 Quick start
 
 Windows:
@@ -143,6 +145,16 @@ bash ./tools/join-mainnet-validator.sh
 Build the portable version:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-portable-win.ps1 -Zip
+```
+
+The portable build command creates/reuses `cai\.venv-win`, installs the Python/native/dashboard dependencies needed for the Windows package, downloads `llama.cpp` runtime binaries when they are missing, runs the desktop smoke doctor, and writes `.dist\CAI-portable.zip`.
+
+If you want to prepare the portable dependencies manually before building:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\install.ps1 --venv cai/.venv-win --skip-dashboard-build
+powershell -ExecutionPolicy Bypass -File .\tools\install-llama-cpp-win.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\build-portable-win.ps1 -Zip
 ```
 

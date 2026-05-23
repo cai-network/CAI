@@ -111,7 +111,7 @@ def main() -> int:
         if npm is None:
             print("[bootstrap] npm not found, skipping cai/dashboard install")
         else:
-            run([npm, "ci"], cwd=dashboard_dir)
+            run([npm, "ci", "--include=optional"], cwd=dashboard_dir)
             if args.skip_dashboard_build:
                 print("[bootstrap] skipping dashboard build")
             else:

@@ -11,7 +11,7 @@ This directory contains public user and developer tools only.
 - `bootstrap.ps1`, `bootstrap.sh`, `bootstrap.py` prepare a local development checkout.
 - `run-cai-main.py` starts the local CAI runtime.
 - `join-mainnet-validator.sh` helps an already configured Linux/macOS/VPS node join the current CAI mainnet as a validator. A configured node means the repository was bootstrapped, CAI runtime is running and reachable through the local API, a local wallet was created/restored, funded and unlocked, and public reachability/firewall settings are prepared when the node is expected to serve as a public validator. The script syncs the validator set and enables validator mode; it does not create a genesis block and does not provision owner treasury keys.
-- `build-portable-win.ps1` builds the Windows portable package.
+- `build-portable-win.ps1` builds the Windows portable package. On a fresh checkout it prepares `cai/.venv-win` and the Windows `llama.cpp` runtime automatically unless `-NoBootstrap` or `-NoInstallLlamaCpp` is passed.
 - `install-llama-cpp*.ps1`, `build-llama-cpp-patched*.ps1` prepare llama.cpp runtime binaries.
 - `generate-release-metadata.py`, `generate-release-notes.py`, `check-portable-clean.ps1` validate release artifacts without publishing official updates.
 

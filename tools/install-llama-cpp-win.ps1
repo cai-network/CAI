@@ -42,18 +42,69 @@ function Download-Asset {
         [switch]$ForceDownload
     )
 
-    if ((Test-Path $DestinationPath) -and -not $ForceDownload) {
-        Write-Output "[llama.cpp] reusing $DestinationPath"
-        return
-    }
-
     $parent = Split-Path -Parent $DestinationPath
     if (-not (Test-Path $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
 
+    $expectedSize = [int64]$Asset.size
+    if ((Test-Path $DestinationPath) -and -not $ForceDownload) {
+        $existingSize = (Get-Item -LiteralPath $DestinationPath).Length
+        if ($existingSize -eq $expectedSize) {
+            Write-Output "[llama.cpp] reusing $DestinationPath"
+            return
+        }
+        Write-Output "[llama.cpp] resuming partial download $($Asset.name) ($existingSize / $expectedSize bytes)"
+    } elseif ((Test-Path $DestinationPath) -and $ForceDownload) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        for ($attempt = 1; $attempt -le 10; $attempt++) {
+            $currentSize = 0
+            if (Test-Path $DestinationPath) {
+                $currentSize = (Get-Item -LiteralPath $DestinationPath).Length
+                if ($currentSize -gt $expectedSize) {
+                    Write-Output "[llama.cpp] removing oversized partial download $($Asset.name)"
+                    Remove-Item -LiteralPath $DestinationPath -Force
+                    $currentSize = 0
+                }
+            }
+
+            Write-Output "[llama.cpp] downloading $($Asset.name) attempt=$attempt current=$currentSize expected=$expectedSize"
+            & $curl.Source `
+                -L `
+                --fail `
+                --retry 5 `
+                --retry-delay 3 `
+                --retry-all-errors `
+                --connect-timeout 30 `
+                --continue-at - `
+                --output $DestinationPath `
+                $Asset.browser_download_url
+            $exitCode = $LASTEXITCODE
+            $actualSize = if (Test-Path $DestinationPath) { (Get-Item -LiteralPath $DestinationPath).Length } else { 0 }
+            if ($exitCode -eq 0 -and $actualSize -eq $expectedSize) {
+                Write-Output "[llama.cpp] download complete $($Asset.name)"
+                return
+            }
+            if ($attempt -eq 10) {
+                throw "Failed to download $($Asset.name): curl exit=$exitCode actual=$actualSize expected=$expectedSize"
+            }
+            Start-Sleep -Seconds ([Math]::Min(20, 2 * $attempt))
+        }
+    }
+
+    if (Test-Path $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
     Write-Output "[llama.cpp] downloading $($Asset.name)"
     Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $DestinationPath
+    $downloadedSize = (Get-Item -LiteralPath $DestinationPath).Length
+    if ($downloadedSize -ne $expectedSize) {
+        throw "Downloaded $($Asset.name) has unexpected size: $downloadedSize expected $expectedSize"
+    }
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot

@@ -5,7 +5,9 @@ param(
     [switch]$SkipDashboardBuild,
     [switch]$Zip,
     [switch]$PreserveData,
-    [switch]$NoStopRunningOutputProcesses
+    [switch]$NoStopRunningOutputProcesses,
+    [switch]$NoBootstrap,
+    [switch]$NoInstallLlamaCpp
 )
 
 $ErrorActionPreference = "Stop"
@@ -211,6 +213,54 @@ function Write-Utf8Json {
     [System.IO.File]::WriteAllText($Path, $json + "`n", $utf8NoBom)
 }
 
+function Test-LlamaCppRuntime {
+    $runtimeBuildRoot = Join-Path $RepoRoot "cai\.runtime\llama.cpp\windows\build"
+    $requiredFiles = @(
+        "llama-server.exe",
+        "rpc-server.exe",
+        "llama.dll",
+        "ggml.dll"
+    )
+    foreach ($requiredFile in $requiredFiles) {
+        if (-not (Test-Path (Join-Path $runtimeBuildRoot $requiredFile))) {
+            return $false
+        }
+    }
+    $cudaRuntimeDlls = @(Get-ChildItem -LiteralPath $runtimeBuildRoot -File -Filter "cudart64*.dll" -ErrorAction SilentlyContinue)
+    return $cudaRuntimeDlls.Count -gt 0
+}
+
+function Ensure-PortableBuildPrerequisites {
+    if (-not (Test-Path $PythonExe)) {
+        if ($NoBootstrap) {
+            throw "Cannot find CAI runtime Windows Python environment: $PythonExe. Run tools\install.ps1 --venv cai/.venv-win --skip-dashboard-build first."
+        }
+        Write-Host "Preparing Windows portable Python environment: $PythonExe"
+        Invoke-Checked "powershell" @(
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            (Join-Path $RepoRoot "tools\install.ps1"),
+            "--venv",
+            "cai/.venv-win",
+            "--skip-dashboard-build"
+        )
+    }
+
+    if (-not (Test-LlamaCppRuntime)) {
+        if ($NoInstallLlamaCpp) {
+            throw "Cannot find complete llama.cpp Windows runtime. Run tools\install-llama-cpp-win.ps1 first."
+        }
+        Write-Host "Preparing llama.cpp Windows runtime for the portable package."
+        Invoke-Checked "powershell" @(
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            (Join-Path $RepoRoot "tools\install-llama-cpp-win.ps1")
+        )
+    }
+}
+
 function Get-CaiPackageVersion {
     param(
         [Parameter(Mandatory = $true)]
@@ -353,13 +403,11 @@ if (Test-Path $PortableStageDir) {
     Remove-PortableDirectory -Path $PortableStageDir -Description "portable stage"
 }
 
+Ensure-PortableBuildPrerequisites
+
 if (-not $SkipDashboardBuild) {
     $DashboardDir = Join-Path $RepoRoot "cai\dashboard"
     Invoke-Checked "npm" @("run", "build") -WorkingDirectory $DashboardDir
-}
-
-if (-not (Test-Path $PythonExe)) {
-    throw "Cannot find CAI runtime Windows Python environment: $PythonExe. Run tools\\install.ps1 first."
 }
 
 Invoke-Checked $PythonExe @("-m", "pip", "install", "--upgrade", "pip")
