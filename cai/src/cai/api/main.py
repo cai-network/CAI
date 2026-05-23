@@ -43,7 +43,6 @@ from hypercorn.config import Config
 from hypercorn.typing import ASGIFramework
 from loguru import logger
 
-from cai_compute_chain.gguf_shard_policy import gguf_shard_compatibility
 from cai_compute_chain.model import curated_model_registry
 
 from cai.api.adapters.chat_completions import (
@@ -76,6 +75,11 @@ from cai.api.cai_transport_errors import build_cai_transport_error_detail
 from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
 from cai.api.keepalive import with_sse_keepalive
+from cai.api.model_compute_policy import (
+    model_card_supported_for_cai_gguf_compute as _model_card_supported_for_cai_gguf_compute,
+    model_info_supported_for_cai_gguf_compute as _model_info_supported_for_cai_gguf_compute,
+    unsupported_gguf_model_detail as _unsupported_gguf_model_detail,
+)
 from cai.api.node_capability_adapter import (
     capability_record_node_identity as _capability_record_node_identity,
     capability_record_node_memory as _capability_record_node_memory,
@@ -277,47 +281,6 @@ from cai_compute_chain.update_channel import (
     update_server_enabled,
 )
 
-
-def _model_card_supported_for_cai_gguf_compute(card: ModelCard) -> bool:
-    return (
-        card.inference_backend == InferenceBackend.LlamaCpp
-        and card.layer_range_supported
-        and card.shard_compatibility == "layer_range_supported"
-    )
-
-
-def _unsupported_gguf_model_detail(card: ModelCard) -> str:
-    architecture = card.gguf_architecture or card.family or "unknown"
-    reason = card.shard_compatibility_reason or (
-        "No checked CAI layer-range proof is registered for this GGUF architecture."
-    )
-    return (
-        f"Model '{card.model_id}' is not supported for CAI distributed GGUF "
-        f"compute yet. Architecture: {architecture}. {reason}"
-    )
-
-
-def _model_info_is_gguf(model: Any) -> bool:
-    model_id = str(getattr(model, "id", "") or "").lower()
-    tags = [str(tag).lower() for tag in getattr(model, "tags", []) or []]
-    return "gguf" in model_id or any("gguf" in tag for tag in tags)
-
-
-def _model_info_supported_for_cai_gguf_compute(model: Any) -> bool:
-    if not _model_info_is_gguf(model):
-        return False
-    model_id = str(getattr(model, "id", "") or "").strip()
-    tags = [str(tag) for tag in getattr(model, "tags", []) or []]
-    compatibility = gguf_shard_compatibility(
-        model_id=model_id,
-        family=" ".join(tags),
-        filename=model_id,
-        allow_full_model_local=False,
-    )
-    return (
-        compatibility.layer_range_supported
-        and compatibility.shard_compatibility == "layer_range_supported"
-    )
 
 _API_EVENT_LOG_DIR = CAI_EVENT_LOG_DIR / "api"
 ONBOARDING_COMPLETE_FILE = CAI_CACHE_HOME / "onboarding_complete"
