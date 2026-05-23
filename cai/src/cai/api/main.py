@@ -19,7 +19,6 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Any, Literal, NoReturn, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -77,6 +76,12 @@ from cai.api.cai_transport_errors import build_cai_transport_error_detail
 from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
 from cai.api.keepalive import with_sse_keepalive
+from cai.api.node_capability_adapter import (
+    capability_record_node_identity as _capability_record_node_identity,
+    capability_record_node_memory as _capability_record_node_memory,
+    capability_record_route_peers as _capability_record_route_peers,
+    worker_identity_state as _worker_identity_state,
+)
 from cai.api.peer_http import (
     bootstrap_api_base_url_for_node as _bootstrap_api_base_url_for_node,
     cai_summary_urls_by_node_id as _cai_summary_urls_by_node_id,
@@ -228,7 +233,6 @@ from cai.shared.types.events import (
 )
 from cai.shared.types.memory import Memory
 from cai.shared.types.profiling import MemoryUsage, NodeIdentity, NodeNetworkInfo
-from cai.shared.types.profiling import AdvertisedTransportEndpoint
 from cai.shared.types.state import State
 from cai.shared.types.tasks import (
     ImageEdits as ImageEditsTask,
@@ -527,254 +531,6 @@ def _iter_cai_update_archive_range(
                 break
             remaining -= len(chunk)
             yield chunk
-
-
-def _worker_identity_state(identity: Any) -> tuple[bool | None, str | None]:
-    if isinstance(identity, Mapping):
-        worker_enabled = identity.get("workerEnabled")
-        reward_address = identity.get("workerRewardAddress")
-    else:
-        worker_enabled = getattr(identity, "worker_enabled", None)
-        reward_address = getattr(identity, "worker_reward_address", None)
-
-    normalized_enabled: bool | None
-    if worker_enabled is None:
-        normalized_enabled = None
-    else:
-        normalized_enabled = bool(worker_enabled)
-
-    normalized_reward_address = str(reward_address or "").strip() or None
-    return normalized_enabled, normalized_reward_address
-
-
-def _capability_record_node_memory(
-    record: NodeCapabilityRecord,
-) -> MemoryUsage | None:
-    summary = record.resource_summary or {}
-    ram_total = _resource_summary_int(
-        summary,
-        "ramBytes",
-        "ramTotalBytes",
-        "ram_total_bytes",
-        "ramTotal",
-        "ram_total",
-    )
-    ram_available = _resource_summary_int(
-        summary,
-        "ramAvailableBytes",
-        "availableRamBytes",
-        "ram_available_bytes",
-        "ramAvailable",
-        "ram_available",
-    )
-    if ram_total is None and ram_available is not None:
-        ram_total = ram_available
-    if ram_available is None and ram_total is not None:
-        ram_available = ram_total
-    if ram_total is None or ram_available is None or ram_total <= 0:
-        return None
-    swap_total = _resource_summary_int(
-        summary,
-        "swapBytes",
-        "swapTotalBytes",
-        "swap_total_bytes",
-        "swapTotal",
-        "swap_total",
-    ) or 0
-    swap_available = _resource_summary_int(
-        summary,
-        "swapAvailableBytes",
-        "swap_available_bytes",
-        "swapAvailable",
-        "swap_available",
-    )
-    if swap_available is None:
-        swap_available = swap_total
-    return MemoryUsage.from_bytes(
-        ram_total=ram_total,
-        ram_available=max(0, ram_available),
-        swap_total=max(0, swap_total),
-        swap_available=max(0, swap_available),
-    )
-
-
-def _resource_summary_int(summary: Mapping[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        if key not in summary:
-            continue
-        value = summary[key]
-        if isinstance(value, Mapping):
-            for nested_key in ("inBytes", "in_bytes", "bytes"):
-                if nested_key not in value:
-                    continue
-                value = value[nested_key]
-                break
-            else:
-                continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _capability_record_node_identity(
-    record: NodeCapabilityRecord,
-) -> NodeIdentity:
-    api_host: str | None = None
-    api_port: int | None = None
-    endpoints = _capability_record_transport_endpoints(record)
-    for url in record.api_urls:
-        endpoint = _api_endpoint_from_url(url)
-        if endpoint is None:
-            continue
-        endpoints.append(endpoint)
-        if api_host is None and endpoint.host not in {"127.0.0.1", "::1", "localhost"}:
-            api_host = endpoint.host
-            api_port = endpoint.port
-
-    data_endpoint = next(
-        (
-            endpoint
-            for endpoint in endpoints
-            if endpoint.purpose == "data" and endpoint.host not in {"0.0.0.0", "::"}
-        ),
-        None,
-    )
-    resource_summary = record.resource_summary or {}
-    total_vram_bytes = _resource_summary_int(
-        resource_summary,
-        "vramBytes",
-        "totalVramBytes",
-        "total_vram_bytes",
-        "vram_bytes",
-    )
-    cpu_physical_cores = _resource_summary_int(
-        resource_summary,
-        "cpuCores",
-        "cpu_cores",
-        "cpuPhysicalCores",
-        "cpu_physical_cores",
-    )
-    cpu_logical_cores = _resource_summary_int(
-        resource_summary,
-        "cpuLogicalCores",
-        "cpu_logical_cores",
-    )
-    return NodeIdentity(
-        friendly_name=record.friendly_name or record.node_id,
-        api_host=api_host,
-        api_port=api_port,
-        data_host=data_endpoint.host if data_endpoint is not None else None,
-        data_port=data_endpoint.port if data_endpoint is not None else None,
-        transport_endpoints=tuple(_dedupe_transport_endpoints(endpoints)),
-        cpu_physical_cores=cpu_physical_cores,
-        cpu_logical_cores=cpu_logical_cores,
-        total_vram_bytes=total_vram_bytes,
-        worker_enabled=record.worker_enabled,
-        relay_enabled=record.relay_enabled,
-        worker_reward_address=record.worker_reward_address,
-        node_public_key_b64=record.node_public_key_b64,
-        node_public_key_address=record.node_public_key_address,
-        readiness=dict(record.readiness or {}),
-    )
-
-
-def _capability_record_transport_endpoints(
-    record: NodeCapabilityRecord,
-) -> list[AdvertisedTransportEndpoint]:
-    endpoints: list[AdvertisedTransportEndpoint] = []
-    for raw in record.data_endpoints or []:
-        if not isinstance(raw, Mapping):
-            continue
-        purpose = str(raw.get("purpose") or "").strip().lower()
-        route_type = str(
-            raw.get("routeType") or raw.get("route_type") or ""
-        ).strip().lower()
-        host = str(raw.get("host") or "").strip()
-        if (
-            purpose not in {"api", "data"}
-            or route_type not in {"direct", "overlay", "relay"}
-            or not host
-            or host in {"0.0.0.0", "::"}
-        ):
-            continue
-        port = raw.get("port")
-        try:
-            normalized_port = int(port) if port is not None else None
-        except (TypeError, ValueError):
-            normalized_port = None
-        source = str(raw.get("source") or "").strip().lower()
-        if source not in {"explicit", "auto", "interface_scan"}:
-            source = ""
-        endpoints.append(
-            AdvertisedTransportEndpoint(
-                purpose=cast(Literal["api", "data"], purpose),
-                route_type=cast(Literal["direct", "overlay", "relay"], route_type),
-                host=host,
-                port=normalized_port,
-                source=cast(
-                    Literal["explicit", "auto", "interface_scan"] | None,
-                    source or None,
-                ),
-                interface_name=raw.get("interfaceName")
-                or raw.get("interface_name")
-                or None,
-            )
-        )
-    return endpoints
-
-
-def _api_endpoint_from_url(url: str) -> AdvertisedTransportEndpoint | None:
-    parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return None
-    try:
-        port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
-    except (TypeError, ValueError):
-        return None
-    host = str(parsed.hostname).strip()
-    if not host or host in {"0.0.0.0", "::", "127.0.0.1", "::1", "localhost"}:
-        return None
-    return AdvertisedTransportEndpoint(
-        purpose="api",
-        route_type="direct",
-        host=host,
-        port=port,
-        source="auto",
-    )
-
-
-def _dedupe_transport_endpoints(
-    endpoints: Sequence[AdvertisedTransportEndpoint],
-) -> list[AdvertisedTransportEndpoint]:
-    seen: set[tuple[str, str, str, int | None]] = set()
-    deduped: list[AdvertisedTransportEndpoint] = []
-    for endpoint in endpoints:
-        key = (endpoint.purpose, endpoint.route_type, endpoint.host, endpoint.port)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(endpoint)
-    return deduped
-
-
-def _capability_record_route_peers(record: NodeCapabilityRecord) -> set[NodeId]:
-    route_hints = record.route_hints or {}
-    peers: set[NodeId] = set()
-    for key in ("overlayPeerIds", "overlay_peer_ids", "directPeerIds", "direct_peer_ids"):
-        raw = route_hints.get(key)
-        if isinstance(raw, Mapping):
-            iterable = raw.keys()
-        elif isinstance(raw, (list, tuple, set)):
-            iterable = raw
-        else:
-            continue
-        for item in iterable:
-            peer_id = str(item or "").strip()
-            if peer_id:
-                peers.add(NodeId(peer_id))
-    return peers
 
 
 class API:
