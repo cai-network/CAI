@@ -12,7 +12,6 @@ import os
 import struct
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -99,6 +98,18 @@ from cai.api.peer_http import (
     cai_summary_urls_by_node_id as _cai_summary_urls_by_node_id,
 )
 from cai.api.rate_limit import InMemoryFixedWindowRateLimiter
+from cai.api.relay_protocol import (
+    LLAMA_CPP_RPC_CMD_HELLO as _LLAMA_CPP_RPC_CMD_HELLO,
+    LLAMA_CPP_RPC_CONN_CAPS_SIZE as _LLAMA_CPP_RPC_CONN_CAPS_SIZE,
+    LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE as _LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE,
+    RELAY_EOF_MESSAGE as _RELAY_EOF_MESSAGE,
+    RELAY_STREAM_CHUNK_SIZE as _RELAY_STREAM_CHUNK_SIZE,
+    RELAY_TARGET_CONNECTED_MESSAGE as _RELAY_TARGET_CONNECTED_MESSAGE,
+    RELAY_TARGET_CONNECT_TIMEOUT_SECONDS as _RELAY_TARGET_CONNECT_TIMEOUT_SECONDS,
+    REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS as _REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS,
+    REVERSE_RELAY_WAIT_TIMEOUT_SECONDS as _REVERSE_RELAY_WAIT_TIMEOUT_SECONDS,
+    ReverseRelaySession as _ReverseRelaySession,
+)
 from cai.api.text_generation_failures import (
     runner_failure_message_for_model,
     text_generation_failure_detail,
@@ -292,32 +303,6 @@ from cai_compute_chain.update_channel import (
 
 _API_EVENT_LOG_DIR = CAI_EVENT_LOG_DIR / "api"
 ONBOARDING_COMPLETE_FILE = CAI_CACHE_HOME / "onboarding_complete"
-_RELAY_TARGET_CONNECT_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_RELAY_TARGET_CONNECT_TIMEOUT_SECONDS", "1") or "1"
-)
-_REVERSE_RELAY_WAIT_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_REVERSE_RELAY_WAIT_TIMEOUT_SECONDS", "4") or "4"
-)
-_RELAY_STREAM_CHUNK_SIZE = max(
-    int(os.getenv("CAI_RELAY_STREAM_CHUNK_SIZE", "16384") or "16384"),
-    1024,
-)
-_RELAY_EOF_MESSAGE = "__cai_relay_eof__"
-_RELAY_TARGET_CONNECTED_MESSAGE = "__cai_relay_target_connected__"
-_REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS", "4") or "4"
-)
-_LLAMA_CPP_RPC_CMD_HELLO = 14
-_LLAMA_CPP_RPC_CONN_CAPS_SIZE = 24
-_LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE = 4 + _LLAMA_CPP_RPC_CONN_CAPS_SIZE
-
-
-@dataclass
-class _ReverseRelaySession:
-    websocket: WebSocket
-    done: asyncio.Event = field(default_factory=asyncio.Event)
-
-
 class NoStoreStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope: Mapping[str, Any]) -> Response:
         response = await super().get_response(path, scope)
