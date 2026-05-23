@@ -16,9 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated, Any, Literal, NoReturn, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
 from uuid import uuid4
 
 import anyio
@@ -70,9 +69,15 @@ from cai.api.adapters.responses import (
 )
 from cai.api.audit import safe_audit_event
 from cai.api.cai_bridge import load_cai_summary, make_cai_service
-from cai.api.cai_transport_errors import build_cai_transport_error_detail
 from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
+from cai.api.http_helpers import (
+    api_command_send_timeout_seconds as _api_command_send_timeout_seconds,
+    execution_cai_base_url as _execution_cai_base_url,
+    http_error_detail as _http_error_detail,
+    load_json_url as _load_json_url,
+    raise_cai_transport_http_error as _raise_cai_transport_http_error,
+)
 from cai.api.image_generation_helpers import (
     ensure_seed as _ensure_seed,
     format_to_content_type as _format_to_content_type,
@@ -320,64 +325,6 @@ class NoStoreStaticFiles(StaticFiles):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
-
-
-def _load_json_url(url: str, *, timeout: int = 5) -> dict[str, Any]:
-    with urlopen(url, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _http_error_detail(exc: HTTPError) -> str | None:
-    try:
-        raw = exc.read()
-    except Exception:
-        return None
-    if not raw:
-        return None
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return raw.decode("utf-8", errors="replace").strip() or None
-    if isinstance(payload, dict):
-        detail = payload.get("detail")
-        if detail is not None:
-            return str(detail)
-        error = payload.get("error")
-        if isinstance(error, dict) and error.get("message") is not None:
-            return str(error["message"])
-    return str(payload)
-
-
-def _api_command_send_timeout_seconds() -> float:
-    raw = os.getenv("CAI_API_COMMAND_SEND_TIMEOUT_SECONDS", "30")
-    try:
-        timeout = float(str(raw).strip() or "30")
-    except ValueError:
-        timeout = 30.0
-    return max(0.1, timeout)
-
-
-def _raise_cai_transport_http_error(
-    exc: BaseException,
-    *,
-    status_code: int = 400,
-    operation: str | None = None,
-) -> NoReturn:
-    raise HTTPException(
-        status_code=status_code,
-        detail=build_cai_transport_error_detail(
-            exc,
-            operation=operation,
-            status_code=status_code,
-        ),
-    ) from exc
-
-
-def _execution_cai_base_url(local_port: int) -> str:
-    configured = str(os.getenv("CAI_EXECUTION_CAI_URL") or "").strip().rstrip("/")
-    if configured:
-        return configured
-    return f"http://127.0.0.1:{local_port}"
 
 
 class API:
