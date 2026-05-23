@@ -5,7 +5,6 @@ import base64
 import asyncio
 import copy
 import contextlib
-import hmac
 import hashlib
 import json
 import os
@@ -66,10 +65,8 @@ from cai.api.adapters.responses import (
     generate_responses_stream,
     responses_request_to_text_generation,
 )
-from cai.api.audit import safe_audit_event
 from cai.api.cai_bridge import load_cai_summary, make_cai_service
 from cai.api.dashboard_state import build_dashboard_state
-from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
 from cai.api.http_helpers import (
     api_command_send_timeout_seconds as _api_command_send_timeout_seconds,
     execution_cai_base_url as _execution_cai_base_url,
@@ -118,6 +115,14 @@ from cai.api.relay_protocol import (
     REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS as _REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS,
     REVERSE_RELAY_WAIT_TIMEOUT_SECONDS as _REVERSE_RELAY_WAIT_TIMEOUT_SECONDS,
     ReverseRelaySession as _ReverseRelaySession,
+)
+from cai.api.request_guards import (
+    maybe_rate_limit_public_request as _maybe_rate_limit_public_request,
+    rate_limit_client_key as _rate_limit_client_key,
+    request_is_local as _request_is_local,
+    require_cai_api_bearer_token as _require_cai_api_bearer_token,
+    require_feature_enabled as _require_feature_enabled,
+    require_local_request as _require_local_request,
 )
 from cai.api.text_generation_failures import (
     runner_failure_message_for_model,
@@ -1467,93 +1472,29 @@ class API:
 
     @staticmethod
     def _request_is_local(request: Request) -> bool:
-        client = request.client
-        host = str(client.host).strip().lower() if client and client.host else ""
-        return host in {"127.0.0.1", "::1", "localhost"}
+        return _request_is_local(request)
 
     def _require_local_request(self, request: Request) -> None:
-        if not self._request_is_local(request):
-            logger.warning(
-                "CAI audit: {}",
-                safe_audit_event(
-                    "local_only_denied",
-                    method=request.method,
-                    path=request.url.path,
-                    client_host=self._rate_limit_client_key(request),
-                    status="denied",
-                ),
-            )
-            raise HTTPException(status_code=404, detail="Not found.")
+        _require_local_request(request)
 
     def _maybe_rate_limit_public_request(self, request: Request) -> JSONResponse | None:
-        if self._request_is_local(request):
-            return None
-        policy = lookup_endpoint_policy(request.method, request.url.path)
-        if policy is None or policy.access != EndpointAccess.PUBLIC:
-            return None
-        decision = self._public_rate_limiter.check(
-            self._rate_limit_client_key(request)
-        )
-        if decision.allowed:
-            return None
-        logger.warning(
-            "CAI audit: {}",
-            safe_audit_event(
-                "public_rate_limit_exceeded",
-                method=request.method,
-                path=request.url.path,
-                client_host=self._rate_limit_client_key(request),
-                status="denied",
-            ),
-        )
-        return JSONResponse(
-            {"detail": "Rate limit exceeded."},
-            status_code=429,
-            headers={"Retry-After": str(decision.retry_after_seconds)},
+        return _maybe_rate_limit_public_request(
+            request,
+            public_rate_limiter=self._public_rate_limiter,
         )
 
     @staticmethod
     def _rate_limit_client_key(request: Request) -> str:
-        client = request.client
-        return str(client.host).strip().lower() if client and client.host else "unknown"
+        return _rate_limit_client_key(request)
 
     def _require_update_server_enabled(self) -> None:
-        if not bool(getattr(self, "update_server_enabled", False)):
-            raise HTTPException(status_code=404, detail="Not found.")
+        _require_feature_enabled(bool(getattr(self, "update_server_enabled", False)))
 
     def _require_cai_api_bearer_token(self, request: Request) -> None:
-        expected_token = str(getattr(self, "cai_api_bearer_token", "") or "").strip()
-        if not expected_token:
-            return
-
-        authorization = str(request.headers.get("authorization") or "").strip()
-        prefix = "bearer "
-        if not authorization.lower().startswith(prefix):
-            logger.warning(
-                "CAI audit: {}",
-                safe_audit_event(
-                    "bearer_auth_failed",
-                    method=request.method,
-                    path=request.url.path,
-                    client_host=self._rate_limit_client_key(request),
-                    status="missing",
-                ),
-            )
-            raise HTTPException(status_code=401, detail="Unauthorized.")
-
-        provided_token = authorization[len(prefix) :].strip()
-        if not provided_token or not hmac.compare_digest(provided_token, expected_token):
-            logger.warning(
-                "CAI audit: {}",
-                safe_audit_event(
-                    "bearer_auth_failed",
-                    method=request.method,
-                    path=request.url.path,
-                    client_host=self._rate_limit_client_key(request),
-                    status="invalid",
-                ),
-            )
-            raise HTTPException(status_code=401, detail="Unauthorized.")
+        _require_cai_api_bearer_token(
+            request,
+            str(getattr(self, "cai_api_bearer_token", "") or ""),
+        )
 
     def get_cai_summary(self, request: Request):
         if self.summary_local_only and not self._request_is_local(request):
