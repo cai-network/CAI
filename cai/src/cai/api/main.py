@@ -9,19 +9,14 @@ import hmac
 import hashlib
 import json
 import os
-import random
-import re
 import struct
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated, Any, Literal, NoReturn, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import urlopen
 from uuid import uuid4
 
 import anyio
@@ -45,7 +40,6 @@ from hypercorn.config import Config
 from hypercorn.typing import ASGIFramework
 from loguru import logger
 
-from cai_compute_chain.gguf_shard_policy import gguf_shard_compatibility
 from cai_compute_chain.model import curated_model_registry
 
 from cai.api.adapters.chat_completions import (
@@ -74,11 +68,65 @@ from cai.api.adapters.responses import (
 )
 from cai.api.audit import safe_audit_event
 from cai.api.cai_bridge import load_cai_summary, make_cai_service
-from cai.api.cai_transport_errors import build_cai_transport_error_detail
 from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
+from cai.api.http_helpers import (
+    api_command_send_timeout_seconds as _api_command_send_timeout_seconds,
+    execution_cai_base_url as _execution_cai_base_url,
+    http_error_detail as _http_error_detail,
+    load_json_url as _load_json_url,
+    raise_cai_transport_http_error as _raise_cai_transport_http_error,
+)
+from cai.api.image_generation_helpers import (
+    ensure_seed as _ensure_seed,
+    format_to_content_type as _format_to_content_type,
+)
 from cai.api.keepalive import with_sse_keepalive
+from cai.api.model_compute_policy import (
+    model_card_supported_for_cai_gguf_compute as _model_card_supported_for_cai_gguf_compute,
+    model_info_supported_for_cai_gguf_compute as _model_info_supported_for_cai_gguf_compute,
+    unsupported_gguf_model_detail as _unsupported_gguf_model_detail,
+)
+from cai.api.model_catalog_response import (
+    build_model_list_response as _build_model_list_response,
+)
+from cai.api.model_placement_policy import (
+    apply_private_network_model_override as _apply_private_network_model_override,
+    llama_cpp_layer_range_supported as _llama_cpp_layer_range_supported,
+    model_card_from_instance as _model_card_from_instance,
+    validate_llama_cpp_multi_node_sharding as _validate_llama_cpp_multi_node_sharding,
+)
+from cai.api.node_capability_adapter import (
+    capability_record_node_identity as _capability_record_node_identity,
+    capability_record_node_memory as _capability_record_node_memory,
+    capability_record_route_peers as _capability_record_route_peers,
+    worker_identity_state as _worker_identity_state,
+)
+from cai.api.peer_http import (
+    bootstrap_api_base_url_for_node as _bootstrap_api_base_url_for_node,
+    cai_summary_urls_by_node_id as _cai_summary_urls_by_node_id,
+)
 from cai.api.rate_limit import InMemoryFixedWindowRateLimiter
+from cai.api.relay_protocol import (
+    LLAMA_CPP_RPC_CMD_HELLO as _LLAMA_CPP_RPC_CMD_HELLO,
+    LLAMA_CPP_RPC_CONN_CAPS_SIZE as _LLAMA_CPP_RPC_CONN_CAPS_SIZE,
+    LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE as _LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE,
+    RELAY_EOF_MESSAGE as _RELAY_EOF_MESSAGE,
+    RELAY_STREAM_CHUNK_SIZE as _RELAY_STREAM_CHUNK_SIZE,
+    RELAY_TARGET_CONNECTED_MESSAGE as _RELAY_TARGET_CONNECTED_MESSAGE,
+    RELAY_TARGET_CONNECT_TIMEOUT_SECONDS as _RELAY_TARGET_CONNECT_TIMEOUT_SECONDS,
+    REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS as _REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS,
+    REVERSE_RELAY_WAIT_TIMEOUT_SECONDS as _REVERSE_RELAY_WAIT_TIMEOUT_SECONDS,
+    ReverseRelaySession as _ReverseRelaySession,
+)
+from cai.api.text_generation_failures import (
+    runner_failure_message_for_model,
+    text_generation_failure_detail,
+)
+from cai.api.update_archive import (
+    resolve_cai_repo_root as _resolve_cai_repo_root,
+    stream_cai_update_archive_response as _stream_cai_update_archive_response,
+)
 from cai.routing.cai_owned_transport_message import CaiOwnedTransportOverlayMessage
 from cai.api.types import (
     AddCustomModelParams,
@@ -221,7 +269,6 @@ from cai.shared.types.events import (
 )
 from cai.shared.types.memory import Memory
 from cai.shared.types.profiling import MemoryUsage, NodeIdentity, NodeNetworkInfo
-from cai.shared.types.profiling import AdvertisedTransportEndpoint
 from cai.shared.types.state import State
 from cai.shared.types.tasks import (
     ImageEdits as ImageEditsTask,
@@ -249,7 +296,6 @@ from cai_compute_chain.cai_desktop_app import (
     resolve_language,
     save_desktop_language,
 )
-from cai_compute_chain.model import CaiNetworkConfig
 from cai_compute_chain.node_capabilities import (
     NodeCapabilityRecord,
     list_node_capabilities,
@@ -264,75 +310,8 @@ from cai_compute_chain.update_channel import (
 )
 
 
-def _model_card_supported_for_cai_gguf_compute(card: ModelCard) -> bool:
-    return (
-        card.inference_backend == InferenceBackend.LlamaCpp
-        and card.layer_range_supported
-        and card.shard_compatibility == "layer_range_supported"
-    )
-
-
-def _unsupported_gguf_model_detail(card: ModelCard) -> str:
-    architecture = card.gguf_architecture or card.family or "unknown"
-    reason = card.shard_compatibility_reason or (
-        "No checked CAI layer-range proof is registered for this GGUF architecture."
-    )
-    return (
-        f"Model '{card.model_id}' is not supported for CAI distributed GGUF "
-        f"compute yet. Architecture: {architecture}. {reason}"
-    )
-
-
-def _model_info_is_gguf(model: Any) -> bool:
-    model_id = str(getattr(model, "id", "") or "").lower()
-    tags = [str(tag).lower() for tag in getattr(model, "tags", []) or []]
-    return "gguf" in model_id or any("gguf" in tag for tag in tags)
-
-
-def _model_info_supported_for_cai_gguf_compute(model: Any) -> bool:
-    if not _model_info_is_gguf(model):
-        return False
-    model_id = str(getattr(model, "id", "") or "").strip()
-    tags = [str(tag) for tag in getattr(model, "tags", []) or []]
-    compatibility = gguf_shard_compatibility(
-        model_id=model_id,
-        family=" ".join(tags),
-        filename=model_id,
-        allow_full_model_local=False,
-    )
-    return (
-        compatibility.layer_range_supported
-        and compatibility.shard_compatibility == "layer_range_supported"
-    )
-
 _API_EVENT_LOG_DIR = CAI_EVENT_LOG_DIR / "api"
 ONBOARDING_COMPLETE_FILE = CAI_CACHE_HOME / "onboarding_complete"
-_RELAY_TARGET_CONNECT_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_RELAY_TARGET_CONNECT_TIMEOUT_SECONDS", "1") or "1"
-)
-_REVERSE_RELAY_WAIT_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_REVERSE_RELAY_WAIT_TIMEOUT_SECONDS", "4") or "4"
-)
-_RELAY_STREAM_CHUNK_SIZE = max(
-    int(os.getenv("CAI_RELAY_STREAM_CHUNK_SIZE", "16384") or "16384"),
-    1024,
-)
-_RELAY_EOF_MESSAGE = "__cai_relay_eof__"
-_RELAY_TARGET_CONNECTED_MESSAGE = "__cai_relay_target_connected__"
-_REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS = float(
-    os.getenv("CAI_REVERSE_RELAY_TARGET_READY_TIMEOUT_SECONDS", "4") or "4"
-)
-_LLAMA_CPP_RPC_CMD_HELLO = 14
-_LLAMA_CPP_RPC_CONN_CAPS_SIZE = 24
-_LLAMA_CPP_RPC_HELLO_RESPONSE_SIZE = 4 + _LLAMA_CPP_RPC_CONN_CAPS_SIZE
-
-
-@dataclass
-class _ReverseRelaySession:
-    websocket: WebSocket
-    done: asyncio.Event = field(default_factory=asyncio.Event)
-
-
 class NoStoreStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope: Mapping[str, Any]) -> Response:
         response = await super().get_response(path, scope)
@@ -340,622 +319,6 @@ class NoStoreStaticFiles(StaticFiles):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
-
-
-def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
-    return f"image/{image_format or 'png'}"
-
-
-def _ensure_seed(params: AdvancedImageParams | None) -> AdvancedImageParams:
-    """Ensure advanced params has a seed set for distributed consistency."""
-    if params is None:
-        return AdvancedImageParams(seed=random.randint(0, 2**32 - 1))
-    if params.seed is None:
-        return params.model_copy(update={"seed": random.randint(0, 2**32 - 1)})
-    return params
-
-
-def _load_json_url(url: str, *, timeout: int = 5) -> dict[str, Any]:
-    with urlopen(url, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _http_error_detail(exc: HTTPError) -> str | None:
-    try:
-        raw = exc.read()
-    except Exception:
-        return None
-    if not raw:
-        return None
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return raw.decode("utf-8", errors="replace").strip() or None
-    if isinstance(payload, dict):
-        detail = payload.get("detail")
-        if detail is not None:
-            return str(detail)
-        error = payload.get("error")
-        if isinstance(error, dict) and error.get("message") is not None:
-            return str(error["message"])
-    return str(payload)
-
-
-def _api_command_send_timeout_seconds() -> float:
-    raw = os.getenv("CAI_API_COMMAND_SEND_TIMEOUT_SECONDS", "30")
-    try:
-        timeout = float(str(raw).strip() or "30")
-    except ValueError:
-        timeout = 30.0
-    return max(0.1, timeout)
-
-
-def _raise_cai_transport_http_error(
-    exc: BaseException,
-    *,
-    status_code: int = 400,
-    operation: str | None = None,
-) -> NoReturn:
-    raise HTTPException(
-        status_code=status_code,
-        detail=build_cai_transport_error_detail(
-            exc,
-            operation=operation,
-            status_code=status_code,
-        ),
-    ) from exc
-
-
-def _execution_cai_base_url(local_port: int) -> str:
-    configured = str(os.getenv("CAI_EXECUTION_CAI_URL") or "").strip().rstrip("/")
-    if configured:
-        return configured
-    return f"http://127.0.0.1:{local_port}"
-
-
-def _api_base_url_from_multiaddr(peer: str, api_port: int) -> str | None:
-    ip4_match = re.match(r"^/ip4/([^/]+)", peer)
-    if ip4_match:
-        return f"http://{ip4_match.group(1)}:{api_port}"
-
-    ip6_match = re.match(r"^/ip6/([^/]+)", peer)
-    if ip6_match:
-        return f"http://[{ip6_match.group(1)}]:{api_port}"
-
-    dns_match = re.match(r"^/dns(?:4|6)?/([^/]+)", peer)
-    if dns_match:
-        return f"http://{dns_match.group(1)}:{api_port}"
-
-    return None
-
-
-def _bootstrap_api_base_url_for_node(node_id: str) -> str | None:
-    target_node_id = str(node_id).strip()
-    if not target_node_id:
-        return None
-
-    config = CaiNetworkConfig()
-    fallback_bootstrap_url: str | None = None
-    for peer in config.bootstrap_peers:
-        peer_node_match = re.search(r"/p2p/([^/]+)$", peer)
-        if not peer_node_match:
-            if fallback_bootstrap_url is None:
-                fallback_bootstrap_url = _api_base_url_from_multiaddr(
-                    peer,
-                    config.default_api_port,
-                )
-            continue
-        if peer_node_match.group(1).strip() != target_node_id:
-            continue
-        return _api_base_url_from_multiaddr(peer, config.default_api_port)
-    return fallback_bootstrap_url
-
-
-def _resolve_cai_repo_root() -> Path:
-    configured = str(
-        os.getenv("CAI_REPO_ROOT")
-        or os.getenv("CAI_RUNTIME_REPO")
-        or ""
-    ).strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
-
-
-_CAI_UPDATE_ARCHIVE_STREAM_CHUNK_BYTES = 1024 * 1024
-
-
-def _stream_cai_update_archive_response(
-    archive_path: Path,
-    *,
-    range_header: str | None,
-) -> Response | StreamingResponse:
-    resolved = archive_path.expanduser().resolve()
-    size = resolved.stat().st_size
-    filename = resolved.name.replace('"', "")
-    base_headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": f'attachment; filename="{filename}"',
-    }
-
-    try:
-        requested_range = _parse_cai_update_archive_range(range_header, size=size)
-    except ValueError:
-        return Response(
-            status_code=HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-            headers={**base_headers, "Content-Range": f"bytes */{size}"},
-        )
-
-    if requested_range is None:
-        start = 0
-        end = size - 1
-        return StreamingResponse(
-            _iter_cai_update_archive_range(resolved, start=start, end=end),
-            media_type="application/zip",
-            headers={**base_headers, "Content-Length": str(size)},
-        )
-
-    start, end = requested_range
-    content_length = max(0, end - start + 1)
-    return StreamingResponse(
-        _iter_cai_update_archive_range(resolved, start=start, end=end),
-        status_code=HTTPStatus.PARTIAL_CONTENT,
-        media_type="application/zip",
-        headers={
-            **base_headers,
-            "Content-Length": str(content_length),
-            "Content-Range": f"bytes {start}-{end}/{size}",
-        },
-    )
-
-
-def _parse_cai_update_archive_range(
-    range_header: str | None,
-    *,
-    size: int,
-) -> tuple[int, int] | None:
-    header = str(range_header or "").strip()
-    if not header:
-        return None
-    if size <= 0:
-        raise ValueError("Cannot serve ranges for an empty archive.")
-    if not header.lower().startswith("bytes="):
-        raise ValueError("Unsupported range unit.")
-    spec = header.split("=", 1)[1].strip()
-    if not spec or "," in spec:
-        raise ValueError("Only a single byte range is supported.")
-    start_text, separator, end_text = spec.partition("-")
-    if separator != "-":
-        raise ValueError("Invalid byte range.")
-
-    if not start_text:
-        suffix_length = int(end_text)
-        if suffix_length <= 0:
-            raise ValueError("Invalid suffix byte range.")
-        start = max(size - suffix_length, 0)
-        end = size - 1
-    else:
-        start = int(start_text)
-        end = int(end_text) if end_text else size - 1
-    if start < 0 or start >= size or end < start:
-        raise ValueError("Requested range is not satisfiable.")
-    return start, min(end, size - 1)
-
-
-def _iter_cai_update_archive_range(
-    archive_path: Path,
-    *,
-    start: int,
-    end: int,
-) -> Iterable[bytes]:
-    remaining = max(0, end - start + 1)
-    with archive_path.open("rb") as handle:
-        handle.seek(start)
-        while remaining > 0:
-            chunk = handle.read(
-                min(_CAI_UPDATE_ARCHIVE_STREAM_CHUNK_BYTES, remaining)
-            )
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            yield chunk
-
-
-def _resolve_local_node_id_from_identities(
-    node_identities: dict[NodeId, Any], *, target_port: int
-) -> str | None:
-    matches: list[str] = []
-    for node_id, identity in node_identities.items():
-        if isinstance(identity, Mapping):
-            raw_port = identity.get("apiPort", -1)
-        else:
-            raw_port = getattr(identity, "api_port", -1)
-        try:
-            api_port = int(raw_port)
-        except (TypeError, ValueError):
-            continue
-        if api_port == int(target_port):
-            matches.append(str(node_id).strip())
-
-    if len(matches) == 1:
-        return matches[0]
-    return None
-
-
-def _format_host_for_url(host: str) -> str:
-    normalized = str(host or "").strip()
-    if ":" in normalized and not normalized.startswith("["):
-        return f"[{normalized}]"
-    return normalized
-
-
-def _build_http_url(host: str, port: int, path: str = "") -> str:
-    normalized_path = str(path or "")
-    if normalized_path and not normalized_path.startswith("/"):
-        normalized_path = f"/{normalized_path}"
-    return f"http://{_format_host_for_url(host)}:{int(port)}{normalized_path}"
-
-
-def _mapping_transport_http_urls(
-    identity: Mapping[str, Any],
-    *,
-    endpoint_path: str = "",
-) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
-    raw_endpoints = identity.get("transportEndpoints")
-    if raw_endpoints is None:
-        raw_endpoints = identity.get("transport_endpoints")
-    if isinstance(raw_endpoints, Sequence) and not isinstance(
-        raw_endpoints, (str, bytes, bytearray)
-    ):
-        route_priority = {"direct": 0, "overlay": 1, "relay": 2}
-        source_priority = {"explicit": 0, "auto": 1, "interface_scan": 2}
-        normalized_endpoints: list[tuple[int, int, str, int]] = []
-        for raw in raw_endpoints:
-            if not isinstance(raw, Mapping):
-                continue
-            if str(raw.get("purpose") or "").strip().lower() != "api":
-                continue
-            host = str(raw.get("host") or "").strip()
-            route_type = str(raw.get("routeType") or raw.get("route_type") or "").strip().lower()
-            source = str(raw.get("source") or "").strip().lower() or "interface_scan"
-            try:
-                port = int(raw.get("port"))
-            except (TypeError, ValueError):
-                continue
-            if not host or host in {"0.0.0.0", "::"} or port <= 0:
-                continue
-            normalized_endpoints.append(
-                (
-                    route_priority.get(route_type, 99),
-                    source_priority.get(source, 99),
-                    host,
-                    port,
-                )
-            )
-        for _route_rank, _source_rank, host, port in sorted(normalized_endpoints):
-            url = _build_http_url(host, port, endpoint_path)
-            if url in seen:
-                continue
-            seen.add(url)
-            urls.append(url)
-
-    host = str(identity.get("apiHost") or "").strip()
-    try:
-        port = int(identity.get("apiPort"))
-    except (TypeError, ValueError):
-        port = -1
-    if host and host not in {"0.0.0.0", "::"} and port > 0:
-        fallback_url = _build_http_url(host, port, endpoint_path)
-        if fallback_url not in seen:
-            urls.append(fallback_url)
-    return urls
-
-
-def _candidate_http_urls_from_identity(
-    identity: Any,
-    *,
-    endpoint_path: str = "",
-) -> list[str]:
-    if isinstance(identity, NodeIdentity):
-        urls: list[str] = []
-        seen: set[str] = set()
-        for endpoint in identity.transport_endpoints_for(
-            purpose="api",
-            require_port=True,
-        ):
-            assert endpoint.port is not None
-            url = _build_http_url(endpoint.host, endpoint.port, endpoint_path)
-            if url in seen:
-                continue
-            seen.add(url)
-            urls.append(url)
-        host = str(identity.api_host or "").strip()
-        if host and host not in {"0.0.0.0", "::"} and identity.api_port is not None:
-            fallback_url = _build_http_url(host, identity.api_port, endpoint_path)
-            if fallback_url not in seen:
-                urls.append(fallback_url)
-        return urls
-
-    if isinstance(identity, Mapping):
-        return _mapping_transport_http_urls(identity, endpoint_path=endpoint_path)
-    return []
-
-
-def _cai_summary_urls_by_node_id(
-    *,
-    node_identities: dict[NodeId, Any],
-    local_port: int,
-    local_node_id: str | None = None,
-) -> dict[str, str]:
-    urls: dict[str, str] = {}
-    resolved_local_node_id = (local_node_id or "").strip() or _resolve_local_node_id_from_identities(
-        node_identities,
-        target_port=local_port,
-    )
-    if resolved_local_node_id:
-        urls[resolved_local_node_id] = f"http://127.0.0.1:{local_port}/v1/cai/summary"
-
-    for node_id, identity in node_identities.items():
-        normalized_node_id = str(node_id).strip()
-        if not normalized_node_id or normalized_node_id == resolved_local_node_id:
-            continue
-        candidates = _candidate_http_urls_from_identity(
-            identity,
-            endpoint_path="/v1/cai/summary",
-        )
-        if candidates:
-            urls[normalized_node_id] = candidates[0]
-    return urls
-
-
-def _worker_identity_state(identity: Any) -> tuple[bool | None, str | None]:
-    if isinstance(identity, Mapping):
-        worker_enabled = identity.get("workerEnabled")
-        reward_address = identity.get("workerRewardAddress")
-    else:
-        worker_enabled = getattr(identity, "worker_enabled", None)
-        reward_address = getattr(identity, "worker_reward_address", None)
-
-    normalized_enabled: bool | None
-    if worker_enabled is None:
-        normalized_enabled = None
-    else:
-        normalized_enabled = bool(worker_enabled)
-
-    normalized_reward_address = str(reward_address or "").strip() or None
-    return normalized_enabled, normalized_reward_address
-
-
-def _capability_record_node_memory(
-    record: NodeCapabilityRecord,
-) -> MemoryUsage | None:
-    summary = record.resource_summary or {}
-    ram_total = _resource_summary_int(
-        summary,
-        "ramBytes",
-        "ramTotalBytes",
-        "ram_total_bytes",
-        "ramTotal",
-        "ram_total",
-    )
-    ram_available = _resource_summary_int(
-        summary,
-        "ramAvailableBytes",
-        "availableRamBytes",
-        "ram_available_bytes",
-        "ramAvailable",
-        "ram_available",
-    )
-    if ram_total is None and ram_available is not None:
-        ram_total = ram_available
-    if ram_available is None and ram_total is not None:
-        ram_available = ram_total
-    if ram_total is None or ram_available is None or ram_total <= 0:
-        return None
-    swap_total = _resource_summary_int(
-        summary,
-        "swapBytes",
-        "swapTotalBytes",
-        "swap_total_bytes",
-        "swapTotal",
-        "swap_total",
-    ) or 0
-    swap_available = _resource_summary_int(
-        summary,
-        "swapAvailableBytes",
-        "swap_available_bytes",
-        "swapAvailable",
-        "swap_available",
-    )
-    if swap_available is None:
-        swap_available = swap_total
-    return MemoryUsage.from_bytes(
-        ram_total=ram_total,
-        ram_available=max(0, ram_available),
-        swap_total=max(0, swap_total),
-        swap_available=max(0, swap_available),
-    )
-
-
-def _resource_summary_int(summary: Mapping[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        if key not in summary:
-            continue
-        value = summary[key]
-        if isinstance(value, Mapping):
-            for nested_key in ("inBytes", "in_bytes", "bytes"):
-                if nested_key not in value:
-                    continue
-                value = value[nested_key]
-                break
-            else:
-                continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _capability_record_node_identity(
-    record: NodeCapabilityRecord,
-) -> NodeIdentity:
-    api_host: str | None = None
-    api_port: int | None = None
-    endpoints = _capability_record_transport_endpoints(record)
-    for url in record.api_urls:
-        endpoint = _api_endpoint_from_url(url)
-        if endpoint is None:
-            continue
-        endpoints.append(endpoint)
-        if api_host is None and endpoint.host not in {"127.0.0.1", "::1", "localhost"}:
-            api_host = endpoint.host
-            api_port = endpoint.port
-
-    data_endpoint = next(
-        (
-            endpoint
-            for endpoint in endpoints
-            if endpoint.purpose == "data" and endpoint.host not in {"0.0.0.0", "::"}
-        ),
-        None,
-    )
-    resource_summary = record.resource_summary or {}
-    total_vram_bytes = _resource_summary_int(
-        resource_summary,
-        "vramBytes",
-        "totalVramBytes",
-        "total_vram_bytes",
-        "vram_bytes",
-    )
-    cpu_physical_cores = _resource_summary_int(
-        resource_summary,
-        "cpuCores",
-        "cpu_cores",
-        "cpuPhysicalCores",
-        "cpu_physical_cores",
-    )
-    cpu_logical_cores = _resource_summary_int(
-        resource_summary,
-        "cpuLogicalCores",
-        "cpu_logical_cores",
-    )
-    return NodeIdentity(
-        friendly_name=record.friendly_name or record.node_id,
-        api_host=api_host,
-        api_port=api_port,
-        data_host=data_endpoint.host if data_endpoint is not None else None,
-        data_port=data_endpoint.port if data_endpoint is not None else None,
-        transport_endpoints=tuple(_dedupe_transport_endpoints(endpoints)),
-        cpu_physical_cores=cpu_physical_cores,
-        cpu_logical_cores=cpu_logical_cores,
-        total_vram_bytes=total_vram_bytes,
-        worker_enabled=record.worker_enabled,
-        relay_enabled=record.relay_enabled,
-        worker_reward_address=record.worker_reward_address,
-        node_public_key_b64=record.node_public_key_b64,
-        node_public_key_address=record.node_public_key_address,
-        readiness=dict(record.readiness or {}),
-    )
-
-
-def _capability_record_transport_endpoints(
-    record: NodeCapabilityRecord,
-) -> list[AdvertisedTransportEndpoint]:
-    endpoints: list[AdvertisedTransportEndpoint] = []
-    for raw in record.data_endpoints or []:
-        if not isinstance(raw, Mapping):
-            continue
-        purpose = str(raw.get("purpose") or "").strip().lower()
-        route_type = str(
-            raw.get("routeType") or raw.get("route_type") or ""
-        ).strip().lower()
-        host = str(raw.get("host") or "").strip()
-        if (
-            purpose not in {"api", "data"}
-            or route_type not in {"direct", "overlay", "relay"}
-            or not host
-            or host in {"0.0.0.0", "::"}
-        ):
-            continue
-        port = raw.get("port")
-        try:
-            normalized_port = int(port) if port is not None else None
-        except (TypeError, ValueError):
-            normalized_port = None
-        source = str(raw.get("source") or "").strip().lower()
-        if source not in {"explicit", "auto", "interface_scan"}:
-            source = ""
-        endpoints.append(
-            AdvertisedTransportEndpoint(
-                purpose=cast(Literal["api", "data"], purpose),
-                route_type=cast(Literal["direct", "overlay", "relay"], route_type),
-                host=host,
-                port=normalized_port,
-                source=cast(
-                    Literal["explicit", "auto", "interface_scan"] | None,
-                    source or None,
-                ),
-                interface_name=raw.get("interfaceName")
-                or raw.get("interface_name")
-                or None,
-            )
-        )
-    return endpoints
-
-
-def _api_endpoint_from_url(url: str) -> AdvertisedTransportEndpoint | None:
-    parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return None
-    try:
-        port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
-    except (TypeError, ValueError):
-        return None
-    host = str(parsed.hostname).strip()
-    if not host or host in {"0.0.0.0", "::", "127.0.0.1", "::1", "localhost"}:
-        return None
-    return AdvertisedTransportEndpoint(
-        purpose="api",
-        route_type="direct",
-        host=host,
-        port=port,
-        source="auto",
-    )
-
-
-def _dedupe_transport_endpoints(
-    endpoints: Sequence[AdvertisedTransportEndpoint],
-) -> list[AdvertisedTransportEndpoint]:
-    seen: set[tuple[str, str, str, int | None]] = set()
-    deduped: list[AdvertisedTransportEndpoint] = []
-    for endpoint in endpoints:
-        key = (endpoint.purpose, endpoint.route_type, endpoint.host, endpoint.port)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(endpoint)
-    return deduped
-
-
-def _capability_record_route_peers(record: NodeCapabilityRecord) -> set[NodeId]:
-    route_hints = record.route_hints or {}
-    peers: set[NodeId] = set()
-    for key in ("overlayPeerIds", "overlay_peer_ids", "directPeerIds", "direct_peer_ids"):
-        raw = route_hints.get(key)
-        if isinstance(raw, Mapping):
-            iterable = raw.keys()
-        elif isinstance(raw, (list, tuple, set)):
-            iterable = raw
-        else:
-            continue
-        for item in iterable:
-            peer_id = str(item or "").strip()
-            if peer_id:
-                peers.add(NodeId(peer_id))
-    return peers
 
 
 class API:
@@ -1847,6 +1210,9 @@ class API:
         )
         self.app.get("/v1/cai/route-health")(self.get_cai_route_health)
         self.app.get("/v1/cai/compute-cells")(self.get_cai_compute_cells)
+        self.app.get("/v1/cai/distributed-inference/diagnostics")(
+            self.get_cai_distributed_inference_diagnostics
+        )
         self.app.get("/v1/cai/transport/sessions")(self.get_cai_transport_sessions)
         self.app.get("/v1/cai/transport/batch-inbox")(
             self.get_cai_transport_batch_inbox
@@ -1967,68 +1333,6 @@ class API:
         self.app.get("/v1/traces/{task_id}/raw")(self.get_trace_raw)
         self.app.get("/onboarding")(self.get_onboarding)
         self.app.post("/onboarding")(self.complete_onboarding)
-
-    @staticmethod
-    def _apply_private_network_override_to_model_card(
-        model_card: ModelCard,
-        *,
-        private_network_model: bool,
-    ) -> ModelCard:
-        if private_network_model and not model_card.is_custom:
-            return model_card.model_copy(update={"is_custom": True})
-        return model_card
-
-    @staticmethod
-    def _model_card_from_instance(instance: Instance) -> ModelCard | None:
-        model_id = instance.shard_assignments.model_id
-        cards: list[ModelCard] = []
-        for shard in instance.shard_assignments.runner_to_shard.values():
-            model_card = getattr(shard, "model_card", None)
-            if isinstance(model_card, ModelCard):
-                cards.append(model_card)
-        if not cards:
-            return None
-        if any(card.model_id != model_id for card in cards):
-            return None
-        return cards[0]
-
-    @staticmethod
-    def _llama_cpp_layer_range_supported(model_card: ModelCard) -> bool:
-        if model_card.inference_backend != InferenceBackend.LlamaCpp:
-            return True
-        return (
-            bool(getattr(model_card, "layer_range_supported", False))
-            and str(getattr(model_card, "shard_compatibility", "") or "").strip()
-            == "layer_range_supported"
-        )
-
-    @staticmethod
-    def _validate_llama_cpp_multi_node_sharding(
-        model_card: ModelCard,
-        *,
-        min_nodes: int,
-    ) -> None:
-        if (
-            model_card.inference_backend != InferenceBackend.LlamaCpp
-            or int(min_nodes) <= 1
-            or API._llama_cpp_layer_range_supported(model_card)
-        ):
-            return
-        architecture = str(
-            getattr(model_card, "gguf_architecture", "") or "unknown"
-        ).strip()
-        compatibility = str(
-            getattr(model_card, "shard_compatibility", "") or "unsupported_for_sharding"
-        ).strip()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"GGUF architecture '{architecture}' is {compatibility}; "
-                "multi-node layer-range placement requires a successful "
-                "CAI layer-range conformance probe. Use single-node full-model "
-                "GGUF mode or add an architecture-specific probe first."
-            ),
-        )
 
     async def get_state(self, request: Request, path: str = ""):
         if self.state_local_only and not self._request_is_local(request):
@@ -2457,6 +1761,19 @@ class API:
     def get_cai_compute_cells(self):
         try:
             return self._get_cai_service().compute_cells()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def get_cai_distributed_inference_diagnostics(
+        self,
+        request: Request,
+        model_id: str | None = None,
+    ):
+        self._require_local_request(request)
+        try:
+            return self._get_cai_service().distributed_inference_diagnostics(
+                model_id=model_id,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -3841,7 +3158,7 @@ class API:
                     await websocket.close()
 
     async def place_instance(self, payload: PlaceInstanceParams):
-        model_card = self._apply_private_network_override_to_model_card(
+        model_card = _apply_private_network_model_override(
             await ModelCard.load(payload.model_id),
             private_network_model=payload.private_network_model,
         )
@@ -3870,7 +3187,7 @@ class API:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=min_nodes,
         )
@@ -3938,10 +3255,10 @@ class API:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         self._validate_worker_only_instance(instance)
-        model_card = self._model_card_from_instance(instance)
+        model_card = _model_card_from_instance(instance)
         if model_card is None:
             model_card = await ModelCard.load(instance.shard_assignments.model_id)
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=len(instance.shard_assignments.node_to_runner),
         )
@@ -3978,7 +3295,7 @@ class API:
         min_nodes: int = 1,
         private_network_model: bool = False,
     ) -> Instance:
-        model_card = self._apply_private_network_override_to_model_card(
+        model_card = _apply_private_network_model_override(
             await ModelCard.load(model_id),
             private_network_model=private_network_model,
         )
@@ -4004,7 +3321,7 @@ class API:
             model_card=model_card,
             available_nodes=len(execution_memory),
         )
-        self._validate_llama_cpp_multi_node_sharding(
+        _validate_llama_cpp_multi_node_sharding(
             model_card,
             min_nodes=min_nodes,
         )
@@ -4071,7 +3388,7 @@ class API:
             return PlacementPreviewResponse(previews=[])
 
         try:
-            model_card = self._apply_private_network_override_to_model_card(
+            model_card = _apply_private_network_model_override(
                 await ModelCard.load(model_id),
                 private_network_model=private_network_model,
             )
@@ -4096,7 +3413,7 @@ class API:
                 else 1
             )
             max_nodes = max(1, len(execution_memory))
-            if not self._llama_cpp_layer_range_supported(model_card):
+            if not _llama_cpp_layer_range_supported(model_card):
                 max_nodes = 1
             instance_combinations = [
                 (Sharding.Pipeline, InstanceMeta.LlamaCpp, i)
@@ -4511,7 +3828,13 @@ class API:
                     self._token_chunk_stream(command.command_id),
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                detail = text_generation_failure_detail(
+                    getattr(self, "state", None),
+                    command_id=command.command_id,
+                    model_id=resolved_model,
+                    fallback=str(exc),
+                )
+                raise HTTPException(status_code=503, detail=detail) from exc
             return JSONResponse(response_payload.model_dump(mode="json"))
 
     async def bench_chat_completions(
@@ -4549,6 +3872,9 @@ class API:
                 status_code=404,
                 detail=f"No instance found for model {model_id}",
             )
+        runner_failure = runner_failure_message_for_model(self.state, model_id)
+        if runner_failure:
+            raise HTTPException(status_code=503, detail=runner_failure)
         return model_id
 
     async def _validate_image_model(self, model: ModelId) -> ModelId:
@@ -5324,93 +4650,11 @@ class API:
 
     async def get_models(self, status: str | None = Query(default=None)) -> ModelList:
         """Returns list of available models, optionally filtered by being downloaded."""
-        all_cards = await get_model_cards()
-        llama_cards = [
-            card for card in all_cards if card.inference_backend == InferenceBackend.LlamaCpp
-        ]
-        cards_by_id = {str(card.model_id): card for card in llama_cards}
-        curated_models = tuple(curated_model_registry())
-        private_execution_ids = {
-            model.execution_model_id for model in curated_models if model.private_network
-        }
-        visible_curated_models = [
-            model
-            for model in curated_models
-            if model.private_network or model.model_id not in private_execution_ids
-        ]
-        selected_cards: list[tuple[ModelCard, str, str | None]] = []
-        selected_ids: set[str] = set()
-
-        for model in visible_curated_models:
-            card = cards_by_id.get(model.model_id) or cards_by_id.get(model.execution_model_id)
-            if card is None:
-                continue
-            selected_cards.append((card, model.model_id, model.display_name))
-            selected_ids.add(model.model_id)
-
-        for card in llama_cards:
-            card_id = str(card.model_id)
-            if card.is_custom and card_id not in selected_ids:
-                selected_cards.append((card, card_id, None))
-                selected_ids.add(card_id)
-
-        if status == "downloaded":
-            downloaded_model_ids: set[str] = set()
-            for node_downloads in self.state.downloads.values():
-                for dl in node_downloads:
-                    if isinstance(dl, DownloadCompleted):
-                        downloaded_model_ids.add(str(dl.shard_metadata.model_card.model_id))
-
-            aliases_by_model_id = {
-                model.model_id: {
-                    model.model_id,
-                    model.execution_model_id,
-                    *model.runtime_model_ids,
-                }
-                for model in curated_models
-            }
-            selected_cards = [
-                item
-                for item in selected_cards
-                if aliases_by_model_id.get(item[1], {item[1]}) & downloaded_model_ids
-            ]
-
-        return ModelList(
-            data=[
-                ModelListModel(
-                    id=model_id,
-                    hugging_face_id=model_id,
-                    name=display_name or ModelId(model_id).short(),
-                    description="",
-                    tags=[],
-                    storage_size_megabytes=card.storage_size.in_mb,
-                    supports_tensor=card.supports_tensor,
-                    tasks=[task.value for task in card.tasks],
-                    is_custom=card.is_custom,
-                    inference_backend=card.inference_backend.value,
-                    family=card.family,
-                    quantization=card.quantization,
-                    base_model=card.base_model,
-                    capabilities=card.capabilities,
-                    context_length=card.context_length,
-                    gguf_architecture=card.gguf_architecture,
-                    shard_compatibility=card.shard_compatibility,
-                    layer_range_supported=card.layer_range_supported,
-                    model_package_manifest_url=card.model_package_manifest_url,
-                    model_package_catalog_id=card.model_package_catalog_id,
-                    model_package_version=card.model_package_version,
-                    layer_range_probe_abi=card.layer_range_probe_abi,
-                    layer_range_probe_report=card.layer_range_probe_report,
-                    layer_range_equivalence_probe_report=(
-                        card.layer_range_equivalence_probe_report
-                    ),
-                    state_format=card.state_format,
-                    activation_state_format=card.activation_state_format,
-                    decode_state_format=card.decode_state_format,
-                    shard_compatibility_reason=card.shard_compatibility_reason,
-                )
-                for card, model_id, display_name in selected_cards
-            ]
+        return _build_model_list_response(
+            all_cards=await get_model_cards(),
+            curated_models=curated_model_registry(),
+            downloads_by_node=self.state.downloads,
+            status=status,
         )
 
     async def add_custom_model(self, payload: AddCustomModelParams) -> ModelListModel:

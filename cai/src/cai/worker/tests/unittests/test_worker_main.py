@@ -645,6 +645,88 @@ def test_download_model_prefers_chunk_backed_manifest_over_existing_full_path() 
     anyio.run(_run)
 
 
+def test_download_model_keeps_chunk_backed_failure_instead_of_full_path_fallback() -> None:
+    async def _run() -> None:
+        event_send, event_recv = channel[object]()
+        command_send, _command_recv = channel[object]()
+        download_send, _download_recv = channel[object]()
+
+        worker = object.__new__(Worker)
+        worker.node_id = NodeId("node-a")
+        worker.event_sender = event_send
+        worker.command_sender = command_send
+        worker.download_command_sender = download_send
+        worker.api_port = 52415
+        worker.state = State()
+        worker.runners = {}
+        worker.input_chunk_buffer = {}
+        worker.input_chunk_counts = {}
+        worker._system_id = SystemId("system-a")
+        worker._download_backoff = KeyedBackoff(base=0.01, cap=0.1)
+        worker._instance_backoff = KeyedBackoff(base=0.01, cap=0.1)
+
+        shard = PipelineShardMetadata(
+            model_card=ModelCard(
+                model_id=ModelId("Qwen/Qwen3-0.6B-GGUF"),
+                storage_size=Memory.from_mb(1),
+                n_layers=28,
+                hidden_size=1,
+                supports_tensor=False,
+                tasks=[ModelTask.TextGeneration],
+                inference_backend=InferenceBackend.LlamaCpp,
+            ),
+            device_rank=0,
+            world_size=1,
+            start_layer=0,
+            end_layer=28,
+            n_layers=28,
+        )
+        download_task = DownloadModel(
+            instance_id=InstanceId("instance-a"),
+            shard_metadata=shard,
+        )
+        chunk_backed_failed = DownloadFailed(
+            node_id=NodeId("node-a"),
+            shard_metadata=shard,
+            error_message=(
+                "Chunk-backed model preparation is incomplete; "
+                "full-model fallback is disabled for curated distributed manifests."
+            ),
+        )
+        plan_calls = 0
+
+        def fake_plan(*args, **kwargs):
+            nonlocal plan_calls
+            if plan_calls == 0:
+                plan_calls += 1
+                return download_task
+            return None
+
+        with patch("cai.worker.main.plan", side_effect=fake_plan), patch(
+            "cai.worker.main._try_prepare_chunk_backed_llama_cpp_download",
+            return_value=chunk_backed_failed,
+        ), patch("cai.worker.main.resolve_existing_model") as resolve_existing_model_mock:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(worker.plan_step)
+                created = await event_recv.receive()
+                preparing = await event_recv.receive()
+                progress = await event_recv.receive()
+                status = await event_recv.receive()
+                tg.cancel_scope.cancel()
+
+        assert isinstance(created, TaskCreated)
+        assert isinstance(preparing, NodeDownloadProgress)
+        assert isinstance(preparing.download_progress, DownloadPending)
+        assert isinstance(progress, NodeDownloadProgress)
+        assert progress.download_progress is chunk_backed_failed
+        assert isinstance(status, TaskStatusUpdated)
+        assert status.task_status == TaskStatus.Failed
+        resolve_existing_model_mock.assert_not_called()
+        event_send.close()
+
+    anyio.run(_run)
+
+
 def test_sync_chunk_backed_peer_inventories_returns_sync_result() -> None:
     recorded_sync_calls: list[tuple[dict[str, object], str, str, bool]] = []
 

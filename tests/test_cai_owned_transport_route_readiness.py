@@ -75,6 +75,46 @@ class CaiOwnedTransportRouteReadinessTests(unittest.TestCase):
         self.assertEqual(readiness["routeHealthAudits"][0]["routeHealthScore"], 4)
         self.assertEqual(readiness["routeHealthAudits"][0]["routeType"], "direct_data")
 
+    def test_route_health_readiness_prefers_direct_data_over_relay(self) -> None:
+        readiness = cai_owned_transport_route_health_readiness(
+            source_node_id="requester",
+            sink_node_ids=["worker"],
+            route_health_records=[
+                {
+                    "sourceNodeId": "requester",
+                    "sinkNodeId": "worker",
+                    "routeType": "relay_active",
+                    "reachable": True,
+                    "transitNodeId": "validator",
+                    "endpointUrl": "relay://validator/worker",
+                    "checkedAt": "2026-05-20T00:00:10+00:00",
+                },
+                {
+                    "sourceNodeId": "requester",
+                    "sinkNodeId": "worker",
+                    "routeType": "direct_data",
+                    "endpointUrl": "tcp://worker:52435",
+                    "reachable": True,
+                    "checkedAt": "2026-05-20T00:00:00+00:00",
+                },
+                {
+                    "sourceNodeId": "worker",
+                    "sinkNodeId": "requester",
+                    "routeType": "direct_data",
+                    "endpointUrl": "tcp://requester:52435",
+                    "reachable": True,
+                    "checkedAt": "2026-05-20T00:00:00+00:00",
+                },
+            ],
+        )
+
+        hop = readiness["routeHealthAudits"][0]
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(hop["routeType"], "direct_data")
+        self.assertEqual(hop["routeHealthScore"], 4)
+        self.assertEqual(hop["endpointUrl"], "tcp://worker:52435")
+        self.assertIsNone(hop["transitNodeId"])
+
     def test_relay_quorum_requires_independent_transit_routes(self) -> None:
         route_policy = {
             "minimumRelayQuorum": 2,

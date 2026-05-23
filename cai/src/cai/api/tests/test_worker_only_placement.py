@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from cai.api.main import API
+from cai.api.model_placement_policy import llama_cpp_layer_range_supported
 from cai.api.types.api import CreateInstanceParams
 from cai.shared.types.commands import CreateInstance, TestCommand
 from cai.master.tests.conftest import create_socket_connection
@@ -438,21 +439,21 @@ def test_send_times_out_when_command_sender_blocks() -> None:
 
 
 def test_llama_cpp_layer_range_support_requires_consistent_policy_fields() -> None:
-    assert API._llama_cpp_layer_range_supported(  # pyright: ignore[reportPrivateUsage]
+    assert llama_cpp_layer_range_supported(
         SimpleNamespace(
             inference_backend=InferenceBackend.LlamaCpp,
             layer_range_supported=False,
             shard_compatibility="layer_range_supported",
         )
     ) is False
-    assert API._llama_cpp_layer_range_supported(  # pyright: ignore[reportPrivateUsage]
+    assert llama_cpp_layer_range_supported(
         SimpleNamespace(
             inference_backend=InferenceBackend.LlamaCpp,
             layer_range_supported=True,
             shard_compatibility="unsupported_for_sharding",
         )
     ) is False
-    assert API._llama_cpp_layer_range_supported(  # pyright: ignore[reportPrivateUsage]
+    assert llama_cpp_layer_range_supported(
         SimpleNamespace(
             inference_backend=InferenceBackend.LlamaCpp,
             layer_range_supported=True,

@@ -37,6 +37,7 @@ CAI_ENDPOINT_POLICIES: tuple[EndpointPolicy, ...] = (
     EndpointPolicy("POST", "/v1/cai/worker-capability-attestations/sync", EndpointAccess.PEER, "Peer validator-signed worker capability attestation sync."),
     EndpointPolicy("GET", "/v1/cai/route-health", EndpointAccess.PEER, "Peer route health export."),
     EndpointPolicy("GET", "/v1/cai/compute-cells", EndpointAccess.PEER, "Peer compute-cell readiness export."),
+    EndpointPolicy("GET", "/v1/cai/distributed-inference/diagnostics", EndpointAccess.LOCAL_ONLY, "Local distributed inference readiness diagnostics."),
     EndpointPolicy("GET", "/v1/cai/transport/sessions", EndpointAccess.LOCAL_ONLY, "Local CAI-owned transport session/proof state."),
     EndpointPolicy("GET", "/v1/cai/transport/batch-inbox", EndpointAccess.LOCAL_ONLY, "Local CAI-owned transport batch inbox for shard runtime."),
     EndpointPolicy("POST", "/v1/cai/transport/batch-inbox/claim-next", EndpointAccess.LOCAL_ONLY, "Local CAI-owned transport claim-next for shard runtime."),

@@ -1250,6 +1250,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local node id used to include this node's batch inbox",
     )
     owned_diagnostics_parser.add_argument(
+        "--model-id",
+        help="Optional model id used to audit distributed inference readiness",
+    )
+    owned_diagnostics_parser.add_argument(
         "--max-records",
         type=int,
         default=50,
@@ -1395,6 +1399,7 @@ def handle_cai_owned_diagnostics(
     *,
     wallet_data_dirname: str | None = None,
     local_node_id: str | None = None,
+    model_id: str | None = None,
     max_records: int | None = 50,
 ) -> str:
     policy = (
@@ -1404,6 +1409,7 @@ def handle_cai_owned_diagnostics(
     )
     snapshot = build_cai_owned_diagnostics_snapshot(
         local_node_id=local_node_id,
+        model_id=model_id,
         max_records=max_records,
         policy=policy,
     )
@@ -4993,6 +4999,7 @@ def main() -> None:
             handle_cai_owned_diagnostics(
                 wallet_data_dirname=args.wallet_data_dirname,
                 local_node_id=args.local_node_id,
+                model_id=args.model_id,
                 max_records=args.max_records,
             )
         )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -16,7 +16,11 @@ from .decentralized_compute import (
 )
 from .model import WalletPolicy
 from .node_capabilities import NodeCapabilityRecord, list_node_capabilities
-from .route_health import RouteHealthRecord, list_route_health_records
+from .route_health import (
+    RouteHealthRecord,
+    list_route_health_records,
+    route_health_score_for_pair,
+)
 from .wallet import data_root, get_active_wallet, load_session
 
 
@@ -41,6 +45,7 @@ _MAX_STRING_LENGTH = 4096
 def build_cai_owned_diagnostics_snapshot(
     *,
     local_node_id: str | None = None,
+    model_id: str | None = None,
     max_records: int | None = None,
     policy: WalletPolicy | None = None,
 ) -> dict[str, Any]:
@@ -133,7 +138,95 @@ def build_cai_owned_diagnostics_snapshot(
                 _node_capability_summary(item) for item in node_capabilities[:limit]
             ],
         },
+        "distributedInference": build_distributed_inference_diagnostics(
+            local_node_id=local_node,
+            model_id=model_id,
+            node_capabilities=node_capabilities,
+            route_health_records=route_health,
+            max_records=limit,
+        ),
         "llmShardSelfTest": _llm_self_test_summary(llm_self_test),
+    }
+
+
+def build_distributed_inference_diagnostics(
+    *,
+    local_node_id: str | None,
+    model_id: str | None = None,
+    node_capabilities: Sequence[NodeCapabilityRecord] | None = None,
+    route_health_records: Sequence[RouteHealthRecord] | None = None,
+    max_records: int | None = None,
+    policy: WalletPolicy | None = None,
+) -> dict[str, Any]:
+    active_policy = policy or WalletPolicy()
+    limit = _coerce_max_records(max_records)
+    capabilities = list(node_capabilities or list_node_capabilities(active_policy))
+    routes = list(route_health_records or list_route_health_records(active_policy))
+    local_node = str(local_node_id or "").strip() or None
+    requested_model = str(model_id or "").strip() or None
+    worker_records = [item for item in capabilities if item.worker_enabled is True]
+    executor_audits = [
+        _distributed_executor_audit(
+            item,
+            local_node_id=local_node,
+            model_id=requested_model,
+            route_health_records=routes,
+        )
+        for item in worker_records
+    ]
+    ready_executors = [
+        item for item in executor_audits if bool(item.get("readyForDistributedInference"))
+    ]
+    blockers = sorted(
+        {
+            str(reason)
+            for item in executor_audits
+            for reason in item.get("blockingReasons", [])
+            if str(reason or "").strip()
+        }
+    )
+    if not worker_records:
+        blockers.append("no_worker_enabled_executors")
+    ready_route_classes = sorted(
+        {
+            str(item.get("routeClass") or "")
+            for item in ready_executors
+            if str(item.get("routeClass") or "").strip()
+        }
+    )
+    status = "ready" if ready_executors else "blocked"
+    if ready_executors and blockers:
+        status = "partial"
+
+    return {
+        "schemaVersion": 1,
+        "status": status,
+        "localNodeId": local_node,
+        "modelId": requested_model,
+        "workerCount": len(worker_records),
+        "readyExecutorCount": len(ready_executors),
+        "runtimeReadyExecutorCount": sum(
+            1 for item in executor_audits if bool(item.get("runtimeReady"))
+        ),
+        "modelReadyExecutorCount": sum(
+            1 for item in executor_audits if bool(item.get("modelReady"))
+        ),
+        "routeReadyExecutorCount": sum(
+            1 for item in executor_audits if bool(item.get("routeReady"))
+        ),
+        "directRouteReadyExecutorCount": sum(
+            1
+            for item in executor_audits
+            if item.get("routeClass") == "direct" and bool(item.get("routeReady"))
+        ),
+        "relayRouteReadyExecutorCount": sum(
+            1
+            for item in executor_audits
+            if item.get("routeClass") == "relay" and bool(item.get("routeReady"))
+        ),
+        "readyRouteClasses": ready_route_classes,
+        "blockingReasons": blockers,
+        "executors": executor_audits[:limit],
     }
 
 
@@ -207,6 +300,238 @@ def build_cai_owned_worker_runtime_queue_snapshot(
         "lastError": last_error,
         "records": summarized_records[:limit],
     }
+
+
+def _distributed_executor_audit(
+    record: NodeCapabilityRecord,
+    *,
+    local_node_id: str | None,
+    model_id: str | None,
+    route_health_records: Sequence[RouteHealthRecord],
+) -> dict[str, Any]:
+    node_id = str(record.node_id or "").strip()
+    route = _distributed_route_audit(
+        local_node_id,
+        node_id,
+        route_health_records,
+    )
+    model = _distributed_model_audit(record, model_id)
+    runtime_ready = _node_runtime_ready(record)
+    contract_ready = _node_llm_contract_ready(record)
+    production_ready = _node_llm_production_ready(record)
+    blocking_reasons: list[str] = []
+    if record.worker_enabled is not True:
+        blocking_reasons.append("worker_disabled")
+    if not bool(route["ready"]):
+        blocking_reasons.append(str(route["reason"]))
+    if not runtime_ready:
+        blocking_reasons.append("cai_owned_transport_not_runtime_ready")
+    if not bool(model["ready"]):
+        blocking_reasons.append(str(model["reason"]))
+
+    return {
+        "nodeId": node_id,
+        "friendlyName": record.friendly_name,
+        "readyForDistributedInference": not blocking_reasons,
+        "blockingReasons": blocking_reasons,
+        "workerEnabled": record.worker_enabled is True,
+        "runtimeReady": runtime_ready,
+        "contractReady": contract_ready,
+        "productionReady": production_ready,
+        "modelReady": bool(model["ready"]),
+        "modelReason": model["reason"],
+        "routeReady": bool(route["ready"]),
+        "routeClass": route["routeClass"],
+        "routeReason": route["reason"],
+        "routeHealthScore": route["score"],
+        "selectedRoute": route["selectedRoute"],
+        "workerAllowedModelIds": list(record.worker_allowed_model_ids),
+        "modelIds": list(record.model_ids),
+    }
+
+
+def _distributed_route_audit(
+    local_node_id: str | None,
+    node_id: str,
+    route_health_records: Sequence[RouteHealthRecord],
+) -> dict[str, Any]:
+    if not node_id:
+        return _route_audit_payload(False, "unknown", "node_id_missing", 0, None)
+    if not local_node_id:
+        return _route_audit_payload(
+            False,
+            "unknown",
+            "local_node_id_missing",
+            0,
+            None,
+        )
+    if node_id == local_node_id:
+        return _route_audit_payload(True, "local", "local_executor", 5, None)
+
+    selected = _best_distributed_route_record(
+        local_node_id,
+        node_id,
+        route_health_records,
+    )
+    score = route_health_score_for_pair(
+        local_node_id,
+        node_id,
+        route_health_records,
+    )
+    if selected is None:
+        return _route_audit_payload(
+            False,
+            "unknown",
+            "route_health_missing",
+            score,
+            None,
+        )
+    route_class = _distributed_route_class(selected.route_type)
+    if selected.reachable and route_class in {"direct", "relay"}:
+        return _route_audit_payload(
+            True,
+            route_class,
+            f"{route_class}_route_ready",
+            score,
+            selected,
+        )
+    if selected.reachable and route_class == "overlay":
+        return _route_audit_payload(
+            False,
+            route_class,
+            "data_plane_route_missing",
+            score,
+            selected,
+        )
+    if selected.reachable:
+        return _route_audit_payload(
+            False,
+            route_class,
+            "route_class_unsupported",
+            score,
+            selected,
+        )
+    return _route_audit_payload(
+        False,
+        route_class,
+        "route_unreachable",
+        score,
+        selected,
+    )
+
+
+def _route_audit_payload(
+    ready: bool,
+    route_class: str,
+    reason: str,
+    score: int,
+    record: RouteHealthRecord | None,
+) -> dict[str, Any]:
+    return {
+        "ready": ready,
+        "routeClass": route_class,
+        "reason": reason,
+        "score": score,
+        "selectedRoute": _route_health_summary(record) if record else None,
+    }
+
+
+def _best_distributed_route_record(
+    source_node_id: str,
+    sink_node_id: str,
+    route_health_records: Sequence[RouteHealthRecord],
+) -> RouteHealthRecord | None:
+    candidates = [
+        item
+        for item in route_health_records
+        if item.source_node_id == source_node_id and item.sink_node_id == sink_node_id
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            1 if item.reachable else 0,
+            _distributed_route_priority(item.route_type),
+            str(item.checked_at or ""),
+        ),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def _distributed_route_priority(route_type: str) -> int:
+    if route_type in {"direct_data", "direct_socket", "llama_cpp_rpc_direct"}:
+        return 4
+    if route_type in {"relay_active", "reverse_relay_available"}:
+        return 3
+    if route_type in {"direct_api", "overlay_peer"}:
+        return 2
+    if route_type == "relay_candidate":
+        return 1
+    return 0
+
+
+def _distributed_route_class(route_type: str) -> str:
+    if route_type in {"direct_data", "direct_socket", "llama_cpp_rpc_direct"}:
+        return "direct"
+    if route_type in {"relay_active", "reverse_relay_available", "relay_candidate"}:
+        return "relay"
+    if route_type in {"direct_api", "overlay_peer"}:
+        return "overlay"
+    return "unknown"
+
+
+def _distributed_model_audit(
+    record: NodeCapabilityRecord,
+    model_id: str | None,
+) -> dict[str, Any]:
+    if not model_id:
+        return {"ready": True, "reason": "model_not_requested"}
+    allowed_model_ids = list(record.worker_allowed_model_ids or [])
+    if allowed_model_ids and not _model_id_in_values(model_id, allowed_model_ids):
+        return {"ready": False, "reason": "model_not_allowed"}
+    if _model_id_in_values(model_id, record.model_ids):
+        return {"ready": True, "reason": "model_advertised"}
+    if _model_id_in_readiness(model_id, record.readiness):
+        return {"ready": True, "reason": "model_readiness_advertised"}
+    if allowed_model_ids:
+        return {"ready": True, "reason": "model_allowed"}
+    return {"ready": False, "reason": "model_not_advertised"}
+
+
+def _model_id_in_readiness(model_id: str, readiness: Mapping[str, Any]) -> bool:
+    for field_name in (
+        "models",
+        "modelReadiness",
+        "model_readiness",
+        "modelShardInventory",
+        "model_shard_inventory",
+    ):
+        value = readiness.get(field_name)
+        if isinstance(value, Mapping) and _model_id_in_values(model_id, value.keys()):
+            return True
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                if isinstance(item, Mapping) and _model_id_in_values(
+                    model_id,
+                    [
+                        item.get("modelId"),
+                        item.get("model_id"),
+                        item.get("id"),
+                        item.get("name"),
+                    ],
+                ):
+                    return True
+
+    cai_owned = readiness.get("caiOwnedTransport")
+    if isinstance(cai_owned, Mapping):
+        return _model_id_in_readiness(model_id, cai_owned)
+    return False
+
+
+def _model_id_in_values(model_id: str, values: Iterable[Any]) -> bool:
+    expected = str(model_id or "").strip().lower()
+    return any(str(item or "").strip().lower() == expected for item in values)
 
 
 def _wallet_summary(policy: WalletPolicy) -> dict[str, Any]:
