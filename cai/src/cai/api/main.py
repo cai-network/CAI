@@ -91,6 +91,10 @@ from cai.api.text_generation_failures import (
     runner_failure_message_for_model,
     text_generation_failure_detail,
 )
+from cai.api.update_archive import (
+    resolve_cai_repo_root as _resolve_cai_repo_root,
+    stream_cai_update_archive_response as _stream_cai_update_archive_response,
+)
 from cai.routing.cai_owned_transport_message import CaiOwnedTransportOverlayMessage
 from cai.api.types import (
     AddCustomModelParams,
@@ -421,116 +425,6 @@ def _execution_cai_base_url(local_port: int) -> str:
     if configured:
         return configured
     return f"http://127.0.0.1:{local_port}"
-
-
-def _resolve_cai_repo_root() -> Path:
-    configured = str(
-        os.getenv("CAI_REPO_ROOT")
-        or os.getenv("CAI_RUNTIME_REPO")
-        or ""
-    ).strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
-
-
-_CAI_UPDATE_ARCHIVE_STREAM_CHUNK_BYTES = 1024 * 1024
-
-
-def _stream_cai_update_archive_response(
-    archive_path: Path,
-    *,
-    range_header: str | None,
-) -> Response | StreamingResponse:
-    resolved = archive_path.expanduser().resolve()
-    size = resolved.stat().st_size
-    filename = resolved.name.replace('"', "")
-    base_headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": f'attachment; filename="{filename}"',
-    }
-
-    try:
-        requested_range = _parse_cai_update_archive_range(range_header, size=size)
-    except ValueError:
-        return Response(
-            status_code=HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-            headers={**base_headers, "Content-Range": f"bytes */{size}"},
-        )
-
-    if requested_range is None:
-        start = 0
-        end = size - 1
-        return StreamingResponse(
-            _iter_cai_update_archive_range(resolved, start=start, end=end),
-            media_type="application/zip",
-            headers={**base_headers, "Content-Length": str(size)},
-        )
-
-    start, end = requested_range
-    content_length = max(0, end - start + 1)
-    return StreamingResponse(
-        _iter_cai_update_archive_range(resolved, start=start, end=end),
-        status_code=HTTPStatus.PARTIAL_CONTENT,
-        media_type="application/zip",
-        headers={
-            **base_headers,
-            "Content-Length": str(content_length),
-            "Content-Range": f"bytes {start}-{end}/{size}",
-        },
-    )
-
-
-def _parse_cai_update_archive_range(
-    range_header: str | None,
-    *,
-    size: int,
-) -> tuple[int, int] | None:
-    header = str(range_header or "").strip()
-    if not header:
-        return None
-    if size <= 0:
-        raise ValueError("Cannot serve ranges for an empty archive.")
-    if not header.lower().startswith("bytes="):
-        raise ValueError("Unsupported range unit.")
-    spec = header.split("=", 1)[1].strip()
-    if not spec or "," in spec:
-        raise ValueError("Only a single byte range is supported.")
-    start_text, separator, end_text = spec.partition("-")
-    if separator != "-":
-        raise ValueError("Invalid byte range.")
-
-    if not start_text:
-        suffix_length = int(end_text)
-        if suffix_length <= 0:
-            raise ValueError("Invalid suffix byte range.")
-        start = max(size - suffix_length, 0)
-        end = size - 1
-    else:
-        start = int(start_text)
-        end = int(end_text) if end_text else size - 1
-    if start < 0 or start >= size or end < start:
-        raise ValueError("Requested range is not satisfiable.")
-    return start, min(end, size - 1)
-
-
-def _iter_cai_update_archive_range(
-    archive_path: Path,
-    *,
-    start: int,
-    end: int,
-) -> Iterable[bytes]:
-    remaining = max(0, end - start + 1)
-    with archive_path.open("rb") as handle:
-        handle.seek(start)
-        while remaining > 0:
-            chunk = handle.read(
-                min(_CAI_UPDATE_ARCHIVE_STREAM_CHUNK_BYTES, remaining)
-            )
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            yield chunk
 
 
 class API:
