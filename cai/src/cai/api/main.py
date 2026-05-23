@@ -79,6 +79,10 @@ from cai.api.dashboard_state import build_dashboard_state
 from cai.api.endpoint_policy import EndpointAccess, lookup_endpoint_policy
 from cai.api.keepalive import with_sse_keepalive
 from cai.api.rate_limit import InMemoryFixedWindowRateLimiter
+from cai.api.text_generation_failures import (
+    runner_failure_message_for_model,
+    text_generation_failure_detail,
+)
 from cai.routing.cai_owned_transport_message import CaiOwnedTransportOverlayMessage
 from cai.api.types import (
     AddCustomModelParams,
@@ -236,7 +240,6 @@ from cai.shared.types.text_generation import Base64Image, TextGenerationTaskPara
 from cai.shared.types.worker.downloads import DownloadCompleted
 from cai.shared.types.worker.downloads import DownloadProgress
 from cai.shared.types.worker.instances import Instance, InstanceId, InstanceMeta, MlxRingInstance
-from cai.shared.types.worker.runners import RunnerFailed
 from cai.shared.types.worker.shards import Sharding
 from cai.shared.topology import Topology
 from cai.utils.banner import print_startup_banner
@@ -4528,7 +4531,8 @@ class API:
                     self._token_chunk_stream(command.command_id),
                 )
             except ValueError as exc:
-                detail = self._text_generation_failure_detail(
+                detail = text_generation_failure_detail(
+                    getattr(self, "state", None),
                     command_id=command.command_id,
                     model_id=resolved_model,
                     fallback=str(exc),
@@ -4571,60 +4575,10 @@ class API:
                 status_code=404,
                 detail=f"No instance found for model {model_id}",
             )
-        runner_failure = self._runner_failure_message_for_model(model_id)
+        runner_failure = runner_failure_message_for_model(self.state, model_id)
         if runner_failure:
             raise HTTPException(status_code=503, detail=runner_failure)
         return model_id
-
-    def _text_generation_failure_detail(
-        self,
-        *,
-        command_id: str,
-        model_id: ModelId,
-        fallback: str,
-    ) -> str:
-        task_failure = self._task_failure_message(command_id)
-        if task_failure:
-            return task_failure
-        runner_failure = self._runner_failure_message_for_model(model_id)
-        if runner_failure:
-            return runner_failure
-        return fallback
-
-    def _task_failure_message(self, command_id: str) -> str | None:
-        state = getattr(self, "state", None)
-        tasks = getattr(state, "tasks", {}) if state is not None else {}
-        for task in getattr(tasks, "values", lambda: [])():
-            if str(getattr(task, "command_id", "") or "") != str(command_id):
-                continue
-            error_message = str(getattr(task, "error_message", "") or "").strip()
-            if error_message:
-                return error_message
-        return None
-
-    def _runner_failure_message_for_model(self, model_id: ModelId) -> str | None:
-        state = getattr(self, "state", None)
-        if state is None:
-            return None
-        instances = getattr(state, "instances", {}) or {}
-        runners = getattr(state, "runners", {}) or {}
-        runner_lookup = getattr(runners, "get", None)
-        if not callable(runner_lookup):
-            return None
-
-        for instance in getattr(instances, "values", lambda: [])():
-            assignments = getattr(instance, "shard_assignments", None)
-            if getattr(assignments, "model_id", None) != model_id:
-                continue
-            runner_to_shard = getattr(assignments, "runner_to_shard", {}) or {}
-            for runner_id in runner_to_shard:
-                status = runner_lookup(runner_id)
-                if status is None:
-                    status = runner_lookup(str(runner_id))
-                if isinstance(status, RunnerFailed):
-                    message = str(status.error_message or "runner failed").strip()
-                    return f"Runner for model {model_id} failed: {message}"
-        return None
 
     async def _validate_image_model(self, model: ModelId) -> ModelId:
         """Validate model exists and return resolved model ID.
