@@ -1441,6 +1441,11 @@ def write_desktop_icon(path: Path, repo_root: Path | None = None) -> Path:
 
 
 def run_tray(controller: CaiDesktopController) -> int:
+    if controller.config.start_on_launch:
+        controller.start()
+    if controller.config.open_browser:
+        controller.open_dashboard()
+
     try:
         import pystray
     except ImportError as exc:
@@ -1516,17 +1521,16 @@ def run_tray(controller: CaiDesktopController) -> int:
             ),
         )
 
-    icon = pystray.Icon(
-        "CAI",
-        _make_tray_icon_image(controller.config.repo_root),
-        "CAI",
-        _build_menu(),
-    )
-    if controller.config.start_on_launch:
-        controller.start()
-    if controller.config.open_browser:
-        controller.open_dashboard()
-    icon.run()
+    try:
+        icon = pystray.Icon(
+            "CAI",
+            _make_tray_icon_image(controller.config.repo_root),
+            "CAI",
+            _build_menu(),
+        )
+        icon.run()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"CAI tray is unavailable: {exc}") from exc
     return 0
 
 
